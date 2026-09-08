@@ -32,9 +32,6 @@ if [ "$SCRIPT_LANG" = "pl" ]; then
     MSG_DONE="AKTUALIZACJA I CZYSZCZENIE ZAKOŃCZONE!"
     MSG_RESTART_WARN="UWAGA: Zalecany jest restart komputera."
     MSG_NO_RESTART="Restart systemu nie jest aktualnie wymagany."
-    MSG_FOUND_ORPHANS="Znaleziono potencjalnie nieużywane pakiety:"
-    MSG_ORPHAN_CONFIRM_PROMPT="Czy chcesz usunąć wszystkie powyższe pakiety? (wpisz 'TAK' aby potwierdzić): "
-    MSG_ORPHAN_CONFIRM_WORD="TAK"
     MSG_PRESS_ENTER="Naciśnij Enter, aby zamknąć okno..."
 else
     MSG_TITLE="         COMPREHENSIVE UPDATE AND CLEANUP SCRIPT       "
@@ -49,9 +46,6 @@ else
     MSG_DONE="UPDATE AND CLEANUP COMPLETE!"
     MSG_RESTART_WARN="WARNING: A system restart is recommended"
     MSG_NO_RESTART="A system restart is not currently required."
-    MSG_FOUND_ORPHANS="Found potentially unused packages:"
-    MSG_ORPHAN_CONFIRM_PROMPT="Do you want to remove all the packages above? (type 'YES' to confirm): "
-    MSG_ORPHAN_CONFIRM_WORD="YES"
     MSG_PRESS_ENTER="Press Enter to close this window..."
 fi
 
@@ -203,9 +197,6 @@ STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 # ---------------------------------------------------------------
 ORPHANS=$(zypper packages --unneeded | awk -F'|' 'NR>4 {gsub(/ /, "", $3); print $3}' | grep -v '^$' | sort -u)
 if [ -n "$ORPHANS" ]; then
-    log_line "${YELLOW}${MSG_FOUND_ORPHANS}${NC}"
-    echo "$ORPHANS" | nl -ba >&3
-    echo "" >&3
     sudo zypper --non-interactive rm $ORPHANS
 fi
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
