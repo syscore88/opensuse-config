@@ -124,6 +124,13 @@ print_pkg_list() {
     done <<< "$list"
 }
 
+# Clears the current progress-bar line before printing a message, so
+# messages always land above the bar instead of being appended to it.
+log_line() {
+    printf "\r\033[K" >&3
+    echo -e "$1" >&3
+}
+
 echo -e "${BLUE}======================================================${NC}" >&3
 echo -e "${BLUE}${MSG_TITLE}${NC}" >&3
 echo -e "${BLUE}======================================================${NC}" >&3
@@ -172,10 +179,10 @@ UPDATED_PACKAGES=$(echo "$ZYPPER_OUT" | awk '
 ' | sort -u)
 
 if [ -n "$UPDATED_PACKAGES" ]; then
-    echo -e "${BLUE}${MSG_PACKAGES_LIST}${NC}" >&3
+    log_line "${BLUE}${MSG_PACKAGES_LIST}${NC}"
     echo "$UPDATED_PACKAGES" >&3
 else
-    echo -e "${BLUE}${MSG_NO_PACKAGES}${NC}" >&3
+    log_line "${BLUE}${MSG_NO_PACKAGES}${NC}"
 fi
 echo "" >&3
 
@@ -194,16 +201,12 @@ STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 # ---------------------------------------------------------------
 # PHASE: SYSTEM CLEANUP (SUDO)
 # ---------------------------------------------------------------
-ORPHANS=$(zypper packages --unneeded | awk -F'|' 'NR>4 {gsub(/ /, "", $3); print $3}' | grep -v '^$')
+ORPHANS=$(zypper packages --unneeded | awk -F'|' 'NR>4 {gsub(/ /, "", $3); print $3}' | grep -v '^$' | sort -u)
 if [ -n "$ORPHANS" ]; then
-    echo -e "${YELLOW}${MSG_FOUND_ORPHANS}${NC}" >&3
+    log_line "${YELLOW}${MSG_FOUND_ORPHANS}${NC}"
     echo "$ORPHANS" | nl -ba >&3
     echo "" >&3
-    printf "%b" "${YELLOW}${MSG_ORPHAN_CONFIRM_PROMPT}${NC}" >&3
-    read -r CONFIRM
-    if [ "$CONFIRM" = "$MSG_ORPHAN_CONFIRM_WORD" ]; then
-        sudo zypper rm $ORPHANS
-    fi
+    sudo zypper --non-interactive rm $ORPHANS
 fi
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
@@ -348,7 +351,7 @@ if [ "$FWUPD_RESTART_NEEDED" = true ]; then
 fi
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_RESTART"
 
-echo -e "\n" >&3
+log_line ""
 echo -e "${GREEN}======================================================${NC}" >&3
 echo -e "${GREEN}${MSG_DONE}${NC}" >&3
 echo -e "${GREEN}======================================================${NC}" >&3
@@ -360,3 +363,9 @@ else
 fi
 echo -e "${YELLOW}${MSG_PRESS_ENTER}${NC}" >&3
 read -r
+
+# `read` merely returns; it does not close the terminal window itself, and
+# some terminal profiles are set to stay open after the shell exits anyway.
+# Force-kill the parent (the terminal's shell) so the window actually closes.
+kill -9 "$PPID" 2>/dev/null
+exit 0
