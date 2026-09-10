@@ -376,21 +376,15 @@ fi
 OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
 [[ -n "$OPENCODE_URL" ]] && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
 
-sudo zypper install -y --allow-vendor-change \
-    python3-gobject python3-Pillow python3-psutil python3-requests \
-    libcanberra-gtk3-module vulkan-tools ImageMagick 2>/dev/null || true
+HEROIC_URL=$(curl -sf https://api.github.com/repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest \
+    | grep "browser_download_url.*x86_64.rpm" | cut -d '"' -f 4 || true)
 
-sudo pip3 install --break-system-packages -q vdf icoextract pygame 2>/dev/null || true
-
-FAUGUS_URL=$(curl -sf https://api.github.com/repos/Faugus/faugus-launcher/releases/latest \
-    | grep "browser_download_url.*noarch.rpm" | cut -d '"' -f 4 || true)
-
-if [[ -n "$FAUGUS_URL" ]]; then
-    FAUGUS_RPM="$RPM_DIR/faugus-launcher-standalone.rpm"
-    download_rpm "faugus-launcher" "$FAUGUS_URL" "$FAUGUS_RPM"
-    if [[ -f "$FAUGUS_RPM" ]]; then
-        sudo rpm -Uvh --nodeps --force "$FAUGUS_RPM" 2>/dev/null || true
-        rm -f "$FAUGUS_RPM"
+if [[ -n "$HEROIC_URL" ]]; then
+    HEROIC_RPM="$RPM_DIR/heroic-games-launcher.rpm"
+    download_rpm "heroic" "$HEROIC_URL" "$HEROIC_RPM"
+    if [[ -f "$HEROIC_RPM" ]]; then
+        sudo rpm -Uvh --nodeps --force "$HEROIC_RPM" 2>/dev/null || true
+        rm -f "$HEROIC_RPM"
     fi
 fi
 
