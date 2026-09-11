@@ -266,11 +266,12 @@ PACKAGES=(
     audacity gimp gmic mixxx kdenlive kolourpaint soundconverter handbrake-gui
     telegram-desktop qbittorrent thunderbird MozillaThunderbird-translations-common
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs
-    gamemode gamescope mangohud goverlay libvkd3d1 wine-staging wine-mono wine-gecko
+    gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel
     gstreamer-plugins-ugly qmmp qmmp-plugin-pack 
     zsh
     ninja pkgconf-pkg-config vulkan-devel
+    qt6-declarative qt6-base
 )
 
 for pkg in "${PACKAGES[@]}"; do
@@ -395,6 +396,14 @@ if [[ ${#RPM_FILES[@]} -gt 0 ]]; then
 fi
 shopt -u nullglob
 rm -rf "$RPM_DIR"
+
+LSFG_TMP="$(mktemp -d)"
+LSFG_URL="$(curl -fsSL https://builds.lsfg-vk.dev/ | grep -oE 'https://[^"'"'"']+linux[^"'"'"']*\.tar\.xz' | head -n1 || true)"
+if [[ -n "$LSFG_URL" ]] && curl -fsSL -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL"; then
+    mkdir -p "$HOME/.local"
+    tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local" || true
+fi
+rm -rf "$LSFG_TMP"
 
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
 
