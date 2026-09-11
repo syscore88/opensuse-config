@@ -376,15 +376,15 @@ fi
 OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
 [[ -n "$OPENCODE_URL" ]] && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
 
-HEROIC_URL=$(curl -sf https://api.github.com/repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest \
+FAUGUS_URL=$(curl -sf https://api.github.com/repos/Faugus/faugus-launcher/releases/latest \
     | grep "browser_download_url.*x86_64.rpm" | cut -d '"' -f 4 || true)
 
-if [[ -n "$HEROIC_URL" ]]; then
-    HEROIC_RPM="$RPM_DIR/heroic-games-launcher.rpm"
-    download_rpm "heroic" "$HEROIC_URL" "$HEROIC_RPM"
-    if [[ -f "$HEROIC_RPM" ]]; then
-        sudo rpm -Uvh --nodeps --force "$HEROIC_RPM" 2>/dev/null || true
-        rm -f "$HEROIC_RPM"
+if [[ -n "$FAUGUS_URL" ]]; then
+    FAUGUS_RPM="$RPM_DIR/faugus-launcher.rpm"
+    download_rpm "faugus" "$FAUGUS_URL" "$FAUGUS_RPM"
+    if [[ -f "$FAUGUS_RPM" ]]; then
+        sudo rpm -Uvh --nodeps --force "$FAUGUS_RPM" 2>/dev/null || true
+        rm -f "$FAUGUS_RPM"
     fi
 fi
 
@@ -395,14 +395,6 @@ if [[ ${#RPM_FILES[@]} -gt 0 ]]; then
 fi
 shopt -u nullglob
 rm -rf "$RPM_DIR"
-
-APPLICATIONS_DIR="$HOME/.local/share/applications"
-for shortcut in \
-    "gay.pancake.lsfg-vk-ui.desktop" \
-    "io.github.eugeniosegala.mako.desktop" \
-    "io.github.eugeniosegala.mako.uninstaller.desktop"; do
-    rm -f "$APPLICATIONS_DIR/$shortcut"
-done
 
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
 
