@@ -118,8 +118,6 @@ print_pkg_list() {
     done <<< "$list"
 }
 
-# Clears the current progress-bar line before printing a message, so
-# messages always land above the bar instead of being appended to it.
 log_line() {
     printf "\r\033[K" >&3
     echo -e "$1" >&3
@@ -159,9 +157,6 @@ else
 fi
 echo "$ZYPPER_OUT"
 
-# With --details, each package inside the "The following ... " block is
-# printed on its own line already including old -> new version info, so we
-# keep whole trimmed lines instead of splitting on whitespace.
 UPDATED_PACKAGES=$(echo "$ZYPPER_OUT" | awk '
     /^The following/ {flag=1; next}
     /^$/ {flag=0}
@@ -355,8 +350,5 @@ fi
 echo -e "${YELLOW}${MSG_PRESS_ENTER}${NC}" >&3
 read -r
 
-# `read` merely returns; it does not close the terminal window itself, and
-# some terminal profiles are set to stay open after the shell exits anyway.
-# Force-kill the parent (the terminal's shell) so the window actually closes.
 kill -9 "$PPID" 2>/dev/null
 exit 0
