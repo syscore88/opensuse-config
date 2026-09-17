@@ -290,7 +290,7 @@ sudo zypper install -y brave-origin || true
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract
     audacity gimp gmic mixxx kdenlive kolourpaint soundconverter handbrake-gui
-    telegram-desktop qbittorrent thunderbird MozillaThunderbird-translations-common
+    telegram-desktop qbittorrent
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel
