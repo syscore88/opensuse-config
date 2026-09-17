@@ -5,6 +5,7 @@
 
 set -Eeuo pipefail
 export ZYPPER_NONINTERACTIVE=1 
+export ZYPP_LOCK_TIMEOUT=300
 export PATH="/usr/sbin:/sbin:$PATH"
 
 detect_system_lang() { 
@@ -32,6 +33,7 @@ exec >>"$TMP_LOG" 2>&1
 
 cleanup_on_exit() {
     local exit_code=$?
+    declare -F restore_packagekit >/dev/null && restore_packagekit || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
     if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
@@ -57,6 +59,64 @@ log_err()   { local m; m="$(_pick_msg "$1" "$2")"; _log_write "${ERR}✘ ERROR: 
 log_warn()  { local m; m="$(_pick_msg "$1" "$2")"; _log_write "${WARN}⚠ WARN: $m${NC}"; }
 
 trap 'log_err "Błąd w linii $LINENO. Polecenie: $BASH_COMMAND" "Error at line $LINENO. Command: $BASH_COMMAND"' ERR
+
+# ==========================================================
+# PACKAGEKIT + BLOKADA ZYPPERA
+# ==========================================================
+PACKAGEKIT_MASKED=0
+PACKAGEKIT_UNITS=(packagekit.service packagekit-offline-update.service)
+
+disable_packagekit() {
+    [[ "${PACKAGEKIT_MASKED:-0}" -eq 1 ]] && return 0
+    sudo systemctl stop "${PACKAGEKIT_UNITS[@]}" 2>/dev/null || true
+    if command -v killall >/dev/null 2>&1; then
+        sudo killall -q packagekitd 2>/dev/null || true
+    else
+        sudo pkill -x packagekitd 2>/dev/null || true
+    fi
+    sudo systemctl mask "${PACKAGEKIT_UNITS[@]}" 2>/dev/null || true
+    PACKAGEKIT_MASKED=1
+    log_info "PackageKit zatrzymany i zamaskowany na czas instalacji." \
+             "PackageKit stopped and masked for the duration of the installation."
+}
+
+restore_packagekit() {
+    [[ "${PACKAGEKIT_MASKED:-0}" -eq 1 ]] || return 0
+    sudo systemctl unmask "${PACKAGEKIT_UNITS[@]}" 2>/dev/null || true
+    PACKAGEKIT_MASKED=0
+    log_info "PackageKit odmaskowany." "PackageKit unmasked."
+}
+
+_zypper_lock_busy() {
+    local f
+    for f in /run/zypp.pid /var/run/zypp.pid; do
+        [[ -e "$f" ]] || continue
+        sudo fuser "$f" >/dev/null 2>&1 && return 0
+    done
+    pgrep -x 'zypper|packagekitd|zypp-refresh' >/dev/null 2>&1 && return 0
+    return 1
+}
+
+wait_for_zypper_lock() {
+    local timeout="${1:-300}" waited=0
+    disable_packagekit
+    while _zypper_lock_busy; do
+        if (( waited >= timeout )); then
+            log_warn "Blokada zyppera trwa ponad ${timeout}s - próbuję ją zwolnić." \
+                     "zypper lock held for over ${timeout}s - trying to release it."
+            sudo killall -q packagekitd 2>/dev/null || sudo pkill -x packagekitd 2>/dev/null || true
+            if pgrep -x zypper >/dev/null 2>&1; then
+                log_warn "zypper nadal pracuje - nie usuwam pliku blokady, kontynuuję." \
+                         "zypper is still running - leaving the lock file alone, continuing."
+            else
+                sudo rm -f /run/zypp.pid /var/run/zypp.pid 2>/dev/null || true
+            fi
+            break
+        fi
+        sleep 3
+        waited=$(( waited + 3 ))
+    done
+}
 
 show_progress() {
     local step=$1
@@ -184,29 +244,16 @@ fi
 
 show_progress 1 $TOTAL_STEPS "$MSG_PHASE_1"
 
-sudo systemctl stop packagekit.service packagekit-offline-update.service 2>/dev/null || true
-sudo systemctl mask packagekit.service packagekit-offline-update.service 2>/dev/null || true
-sudo killall -9 packagekitd 2>/dev/null || true
+disable_packagekit
 
-wait_for_zypper_lock() {
-    local i=0
-    while pgrep -x zypper >/dev/null || pgrep -x packagekitd >/dev/null; do
-        if (( i++ >= 24 )); then
-            sudo systemctl stop packagekit.service 2>/dev/null || true
-            sudo killall -9 zypper packagekitd 2>/dev/null || true
-            sudo rm -f /var/run/zypp.pid 2>/dev/null || true
-            break
-        fi
-        sleep 5
-    done
-}
-
+wait_for_zypper_lock
 for pkg in curl wget pciutils gpg2 dconf; do
     sudo zypper install -y "$pkg" || true
 done
 
 show_progress 2 $TOTAL_STEPS "$MSG_PHASE_1"
 
+wait_for_zypper_lock
 sudo zypper addrepo -cfp 90 https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/ packman || true
 sudo rpm --import https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/repodata/repomd.xml.key 2>/dev/null || true
 
@@ -235,7 +282,9 @@ fi
 
 sudo zypper addrepo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo || true
 
+wait_for_zypper_lock
 sudo zypper --gpg-auto-import-keys refresh || true
+wait_for_zypper_lock
 sudo zypper dup -y --allow-vendor-change || true
 
 sudo mkdir -p /etc/NetworkManager/conf.d
@@ -260,11 +309,13 @@ TO_REMOVE=(
     gnome-maps gnome-weather yelp evolution evolution-common
     evolution-plugins evolution-ews parole gnome-music
 )
+wait_for_zypper_lock
 for pkg in "${TO_REMOVE[@]}"; do
     if rpm -q "$pkg" &>/dev/null; then
         sudo zypper remove -y "$pkg" 2>/dev/null || true
     fi
 done
+wait_for_zypper_lock
 sudo zypper autoremove -y 2>/dev/null || true
 
 rm -rf ~/.local/share/akonadi ~/.local/share/kmail2 ~/.local/share/local-mail ~/.local/share/contacts ~/.local/share/korganizer ~/.local/share/akregator ~/.local/share/kontact ~/.local/share/konqueror
@@ -314,6 +365,7 @@ PACKAGES=(
     gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
    )
 
+wait_for_zypper_lock
 sudo zypper --gpg-auto-import-keys refresh --force || true
 
 for pkg in "${PACKAGES[@]}"; do
@@ -406,12 +458,14 @@ install_discord_rpm() {
     local dest="$RPM_DIR/discord.rpm"
     if wget -q --user-agent="Mozilla/5.0" "https://discord.com/api/download?platform=linux&format=rpm" -O "$dest"; then
         if file "$dest" | grep -q "RPM"; then
+            wait_for_zypper_lock
             sudo zypper install -y --allow-unsigned-rpm "$dest" 2>/dev/null || true
         fi
         rm -f "$dest"
     fi
 }
 
+wait_for_zypper_lock
 if sudo zypper repos 2>/dev/null | grep -iq "packman"; then
     sudo zypper install -y discord 2>/dev/null || install_discord_rpm
 else
@@ -428,6 +482,7 @@ if [[ -n "$FAUGUS_URL" ]]; then
     FAUGUS_RPM="$RPM_DIR/faugus-launcher.rpm"
     download_rpm "faugus" "$FAUGUS_URL" "$FAUGUS_RPM"
     if [[ -f "$FAUGUS_RPM" ]]; then
+        wait_for_zypper_lock
         sudo rpm -Uvh --nodeps --force "$FAUGUS_RPM" 2>/dev/null || true
         rm -f "$FAUGUS_RPM"
     fi
@@ -453,6 +508,7 @@ rm -rf "$LSFG_TMP"
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
 
 pkg_available() {
+    wait_for_zypper_lock
     sudo zypper --non-interactive install --dry-run "$1" &>/dev/null
 }
 
@@ -562,7 +618,7 @@ flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
 # ==========================================================
 show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
 
-sudo systemctl unmask packagekit.service packagekit-offline-update.service 2>/dev/null || true
+restore_packagekit
 sudo systemctl enable fstrim.timer || true
 sudo journalctl --vacuum-time=2d || true
 
