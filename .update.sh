@@ -23,9 +23,6 @@ if [ "$SCRIPT_LANG" = "pl" ]; then
     MSG_TITLE="                  KONSERWACJA SYSTEMU                  "
     MSG_ASK_PASS="Proszę podać hasło administratora (sudo):"
     MSG_PHASE_UPDATE="[1/2] Aktualizacja i optymalizacja..."
-    MSG_PACKAGES_LIST="Pakiety do aktualizacji:"
-    MSG_NO_PACKAGES="Brak pakietów do aktualizacji."
-    MSG_FLATPAK_UPDATED="Aktualizowane pakiety Flatpak:"
     MSG_PHASE_CLEAN_SYS="[2/2] Czyszczenie systemowe..."
     MSG_DONE="             KONSERWACJA SYSTEMU ZAKOŃCZONA!           "
     MSG_RESTART_WARN="UWAGA: Zalecany jest restart komputera"
@@ -35,9 +32,6 @@ else
     MSG_TITLE="                   SYSTEM MAINTENANCE                   "
     MSG_ASK_PASS="Please enter the administrator (sudo) password:"
     MSG_PHASE_UPDATE="[1/2] Updates and optimization..."
-    MSG_PACKAGES_LIST="Packages to be updated:"
-    MSG_NO_PACKAGES="No packages to update."
-    MSG_FLATPAK_UPDATED="Updating Flatpak packages:"
     MSG_PHASE_CLEAN_SYS="[2/2] System cleanup..."
     MSG_DONE="             SYSTEM MAINTENANCE COMPLETE!           "
     MSG_RESTART_WARN="WARNING: A system restart is recommended"
@@ -103,17 +97,6 @@ show_progress() {
     printf "\r\033[K[\033[1;32m%s\033[0;90m%s\033[0m] %3d%% | \033[1;36m%s\033[0m" "$bar_filled" "$bar_empty" "$percent" "$msg" >&3
 }
 
-print_pkg_list() {
-    local title="$1"
-    local list="$2"
-    [ -z "$list" ] && return
-    printf "\r\033[K" >&3
-    echo -e "${BLUE}${title}${NC}" >&3
-    while IFS= read -r pkg; do
-        [ -n "$pkg" ] && echo -e "  ${GREEN}•${NC} $pkg" >&3
-    done <<< "$list"
-}
-
 log_line() {
     printf "\r\033[K" >&3
     echo -e "$1" >&3
@@ -128,51 +111,15 @@ sudo -v >&3
 while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 SUDO_KEEP_ALIVE_PID=$!
 
-OS_ID=$(grep "^ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
-if [ "$OS_ID" = "opensuse-tumbleweed" ]; then
-    OS_NAME="Tumbleweed"
-elif [ "$OS_ID" = "opensuse-leap" ]; then
-    OS_NAME="Leap"
-else
-    OS_NAME="$OS_ID"
-fi
-
 REBOOT_NEEDED=false
 FWUPD_RESTART_NEEDED=false
-TOTAL_STEPS=18
+TOTAL_STEPS=16
 STEP=0
 show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_UPDATE"
 
 # ---------------------------------------------------------------
-# PHASE: UPDATE
+# PHASE: FIRMWARE UPDATE
 # ---------------------------------------------------------------
-if [ "$OS_NAME" = "Tumbleweed" ]; then
-    ZYPPER_OUT=$(sudo env LC_ALL=C zypper --non-interactive dup --details --no-allow-vendor-change --auto-agree-with-licenses 2>&1)
-else
-    ZYPPER_OUT=$(sudo env LC_ALL=C zypper --non-interactive up --details --auto-agree-with-licenses 2>&1)
-fi
-echo "$ZYPPER_OUT"
-
-UPDATED_PACKAGES=$(echo "$ZYPPER_OUT" | awk '
-    /^The following/ {flag=1; next}
-    /^$/ {flag=0}
-    flag {
-        line=$0
-        gsub(/^[ \t]+|[ \t]+$/, "", line)
-        if (line != "") print line
-    }
-' | sort -u)
-
-if [ -n "$UPDATED_PACKAGES" ]; then
-    log_line "${BLUE}${MSG_PACKAGES_LIST}${NC}"
-    echo "$UPDATED_PACKAGES" >&3
-else
-    log_line "${BLUE}${MSG_NO_PACKAGES}${NC}"
-fi
-echo "" >&3
-
-STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_UPDATE"
-
 if command -v fwupdmgr &> /dev/null; then
     sudo fwupdmgr refresh --force
     FWUPD_OUT=$(sudo fwupdmgr update -y 2>&1)
@@ -202,18 +149,6 @@ sudo zypper clean -a
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
 if command -v flatpak &> /dev/null; then
-    FLATPAK_BEFORE=$(flatpak list --system --app --columns=application,version 2>/dev/null)
-
-    sudo flatpak update --system -y
-
-    FLATPAK_AFTER=$(flatpak list --system --app --columns=application,version 2>/dev/null)
-
-    FLATPAK_PKGS=$(join -t$'\t' -j1 \
-        <(echo "$FLATPAK_BEFORE" | sort -t$'\t' -k1,1) \
-        <(echo "$FLATPAK_AFTER" | sort -t$'\t' -k1,1) 2>/dev/null \
-        | awk -F'\t' '$2 != $3 { printf "%s: %s → %s\n", $1, ($2==""?"?":$2), ($3==""?"?":$3) }')
-    print_pkg_list "$MSG_FLATPAK_UPDATED" "$FLATPAK_PKGS"
-
     sudo flatpak uninstall --unused --system --delete-data -y
     sudo flatpak repair --system
 
@@ -267,18 +202,6 @@ fi
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
 if command -v flatpak &> /dev/null; then
-    FLATPAK_BEFORE=$(flatpak list --user --app --columns=application,version 2>/dev/null)
-
-    flatpak update --user -y
-
-    FLATPAK_AFTER=$(flatpak list --user --app --columns=application,version 2>/dev/null)
-
-    FLATPAK_PKGS=$(join -t$'\t' -j1 \
-        <(echo "$FLATPAK_BEFORE" | sort -t$'\t' -k1,1) \
-        <(echo "$FLATPAK_AFTER" | sort -t$'\t' -k1,1) 2>/dev/null \
-        | awk -F'\t' '$2 != $3 { printf "%s: %s → %s\n", $1, ($2==""?"?":$2), ($3==""?"?":$3) }')
-    print_pkg_list "$MSG_FLATPAK_UPDATED" "$FLATPAK_PKGS"
-
     flatpak uninstall --unused --user --delete-data -y
     flatpak repair --user
 
