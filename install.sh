@@ -184,8 +184,22 @@ fi
 
 show_progress 1 $TOTAL_STEPS "$MSG_PHASE_1"
 
-sudo systemctl stop packagekit.service 2>/dev/null || true
+sudo systemctl stop packagekit.service packagekit-offline-update.service 2>/dev/null || true
+sudo systemctl mask packagekit.service packagekit-offline-update.service 2>/dev/null || true
 sudo killall -9 packagekitd 2>/dev/null || true
+
+wait_for_zypper_lock() {
+    local i=0
+    while pgrep -x zypper >/dev/null || pgrep -x packagekitd >/dev/null; do
+        if (( i++ >= 24 )); then
+            sudo systemctl stop packagekit.service 2>/dev/null || true
+            sudo killall -9 zypper packagekitd 2>/dev/null || true
+            sudo rm -f /var/run/zypp.pid 2>/dev/null || true
+            break
+        fi
+        sleep 5
+    done
+}
 
 for pkg in curl wget pciutils gpg2 dconf; do
     sudo zypper install -y "$pkg" || true
@@ -286,6 +300,7 @@ fi
 # ==========================================================
 show_progress 4 $TOTAL_STEPS "$MSG_PHASE_2"
 
+wait_for_zypper_lock
 sudo zypper install -y google-chrome-stable || true
 sudo zypper install -y brave-origin || true
 
@@ -299,7 +314,10 @@ PACKAGES=(
     gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
    )
 
+sudo zypper --gpg-auto-import-keys refresh --force || true
+
 for pkg in "${PACKAGES[@]}"; do
+    wait_for_zypper_lock
     if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
         continue
     fi
@@ -369,6 +387,7 @@ else
 fi
 
 for pkg in "${PACKAGES_32[@]}"; do
+    wait_for_zypper_lock
     sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
 done
 
@@ -417,6 +436,7 @@ fi
 shopt -s nullglob
 RPM_FILES=("$RPM_DIR"/*.rpm)
 if [[ ${#RPM_FILES[@]} -gt 0 ]]; then
+    wait_for_zypper_lock
     sudo zypper install -y --allow-unsigned-rpm "${RPM_FILES[@]}" 2>/dev/null || true
 fi
 shopt -u nullglob
@@ -456,6 +476,7 @@ done
 VIRT_PACKAGES=(virt-manager "$QEMU_PKG" qemu-tools libvirt libvirt-daemon-qemu)
 [[ -n "$OVMF_PKG" ]] && VIRT_PACKAGES+=("$OVMF_PKG")
 
+wait_for_zypper_lock
 sudo zypper install -y --allow-vendor-change "${VIRT_PACKAGES[@]}" 2>/dev/null || true
 
 if command -v dconf &>/dev/null; then
@@ -528,6 +549,7 @@ done
 
 show_progress 8 $TOTAL_STEPS "$MSG_PHASE_2"
 
+wait_for_zypper_lock
 sudo zypper install -y flatpak 2>/dev/null || true
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 flatpak update --appstream 2>/dev/null || true
@@ -540,6 +562,7 @@ flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
 # ==========================================================
 show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
 
+sudo systemctl unmask packagekit.service packagekit-offline-update.service 2>/dev/null || true
 sudo systemctl enable fstrim.timer || true
 sudo journalctl --vacuum-time=2d || true
 
@@ -560,9 +583,6 @@ fi
 show_progress 11 $TOTAL_STEPS "$MSG_PHASE_3"
 
 ZSH_BIN=$(command -v zsh || true)
-if [[ -z "$ZSH_BIN" ]]; then
-    sudo zypper install -y zsh && ZSH_BIN=$(command -v zsh || true)
-fi
 
 if [[ -n "$ZSH_BIN" ]]; then
     sudo chsh -s "$ZSH_BIN" "$CURRENT_USER" || true
