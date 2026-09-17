@@ -306,8 +306,8 @@ sudo zypper install -y brave-origin || true
 
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract
-    audacity gimp gmic mixxx kdenlive kolourpaint soundconverter handbrake-gui
-    telegram-desktop qbittorrent zsh qt6-declarative qt6-base
+    audacity gimp gmic mixxx kdenlive kolourpaint soundconverter handbrake-gtk
+    telegram-desktop qbittorrent zsh qt6-declarative-devel qt6-base-devel
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel
@@ -349,7 +349,7 @@ PACKAGES_32=(
 
 GPU_VENDOR=$(lspci -nn | grep -iE "VGA|3D|Display" || true)
 DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
-MESA_32_PKGS=(Mesa-libGL1-32bit Mesa-dri-32bit Mesa-libVulkan-32bit)
+MESA_32_PKGS=(Mesa-libGL1-32bit Mesa-dri-32bit libvulkan1-32bit)
 
 GPU_HAS_NVIDIA=0
 GPU_HAS_AMD=0
