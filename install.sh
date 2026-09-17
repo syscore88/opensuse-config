@@ -290,15 +290,12 @@ sudo zypper install -y brave-origin || true
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract
     audacity gimp gmic mixxx kdenlive kolourpaint soundconverter handbrake-gui
-    telegram-desktop qbittorrent
+    telegram-desktop qbittorrent zsh qt6-declarative qt6-base
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel
-    gstreamer-plugins-ugly qmmp qmmp-plugin-pack 
-    zsh
-    ninja pkgconf-pkg-config vulkan-devel
-    qt6-declarative qt6-base
-)
+    gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
+   )
 
 for pkg in "${PACKAGES[@]}"; do
     if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
