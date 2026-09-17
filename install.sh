@@ -222,6 +222,16 @@ sudo zypper addrepo https://brave-browser-rpm-release.s3.brave.com/brave-browser
 sudo zypper --gpg-auto-import-keys refresh || true
 sudo zypper dup -y --allow-vendor-change || true
 
+sudo mkdir -p /etc/NetworkManager/conf.d
+echo -e "[main]\ndns=default\nrc-manager=symlink" | sudo tee /etc/NetworkManager/conf.d/dns.conf > /dev/null
+echo -e "[global-dns]\n\n[global-dns-domain-*]\nservers=1.1.1.1,1.0.0.1,2606:4700:4700::1112,2606:4700:4700::1002" | sudo tee /etc/NetworkManager/conf.d/global-dns.conf > /dev/null
+
+ACTIVE_CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep -v "^lo" | head -n 1 | cut -d: -f1 || true)
+if [[ -n "$ACTIVE_CONN" ]]; then
+    sudo nmcli connection modify "$ACTIVE_CONN" ipv4.dns "1.1.1.1,1.0.0.1" ipv6.dns "2606:4700:4700::1112,2606:4700:4700::1002"
+    sudo nmcli connection up "$ACTIVE_CONN" || true
+fi
+
 show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
 
 TO_REMOVE=(
@@ -549,16 +559,6 @@ if sudo test -f "$LOADER_CONF"; then
 fi
 
 show_progress 11 $TOTAL_STEPS "$MSG_PHASE_3"
-
-sudo mkdir -p /etc/NetworkManager/conf.d
-echo -e "[main]\ndns=default\nrc-manager=symlink" | sudo tee /etc/NetworkManager/conf.d/dns.conf > /dev/null
-echo -e "[global-dns]\n\n[global-dns-domain-*]\nservers=1.1.1.1,1.0.0.1,2606:4700:4700::1112,2606:4700:4700::1002" | sudo tee /etc/NetworkManager/conf.d/global-dns.conf > /dev/null
-
-ACTIVE_CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep -v "^lo" | head -n 1 | cut -d: -f1 || true)
-if [[ -n "$ACTIVE_CONN" ]]; then
-    sudo nmcli connection modify "$ACTIVE_CONN" ipv4.dns "1.1.1.1,1.0.0.1" ipv6.dns "2606:4700:4700::1112,2606:4700:4700::1002"
-    sudo nmcli connection up "$ACTIVE_CONN" || true
-fi
 
 ZSH_BIN=$(command -v zsh || true)
 if [[ -z "$ZSH_BIN" ]]; then
