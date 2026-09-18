@@ -194,7 +194,7 @@ command -v run0 >/dev/null 2>&1 && HAVE_RUN0=1
 
 if [[ "$HAVE_SUDO" -eq 1 && "$HAVE_VISUDO" -eq 1 ]]; then
     PRIV_MECH="sudo"
-elif [[ "$HAVE_SUDO" -eq 1 && "$HAVE_RUN0" -eq 0 ]]; then
+elif [[ "$HAVE_SUDO" -eq 1 ]]; then
     PRIV_MECH="sudo-novisudo"
 elif [[ "$HAVE_RUN0" -eq 1 ]]; then
     PRIV_MECH="run0"
