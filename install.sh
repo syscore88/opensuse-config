@@ -33,8 +33,8 @@ exec >>"$TMP_LOG" 2>&1
 
 cleanup_on_exit() {
     local exit_code=$?
-    declare -F restore_packagekit >/dev/null && restore_packagekit || true
     [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    declare -F restore_packagekit >/dev/null && restore_packagekit || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
     if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
@@ -181,32 +181,68 @@ if [[ -z "$CURRENT_USER" ]]; then
     exit 1
 fi
 
+RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
+SUDOERS_NOPASSWD_FILE="/etc/sudoers.d/99-temp-installer"
+USE_RUN0=0
+if sudo --version 2>/dev/null | grep -qi "run0"; then
+    USE_RUN0=1
+fi
+
 if [[ "$SCRIPT_LANG" == "pl" ]]; then
-    printf 'Wymagane hasło sudo: ' >&3
+    PROMPT_TXT='Wymagane hasło sudo: '
+    RETRY_TXT='Błędne hasło, spróbuj ponownie: '
+    FAIL_TXT='✘ Nieprawidłowe hasło sudo - przerywam.'
 else
-    printf 'sudo password required: ' >&3
+    PROMPT_TXT='sudo password required: '
+    RETRY_TXT='Wrong password, try again: '
+    FAIL_TXT='✘ Invalid sudo password - aborting.'
 fi
-if [[ -r /dev/tty ]]; then
-    IFS= read -rs SUDO_PASSWORD < /dev/tty || true
-else
-    IFS= read -rs SUDO_PASSWORD || true
-fi
-printf '\n' >&3
 
-if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' -v &>/dev/null; then
-    unset SUDO_PASSWORD
-else
-    unset SUDO_PASSWORD
-    if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        echo -e "${ERR}✘ Nieprawidłowe hasło – przerywam.${NC}" >&3
-    else
-        echo -e "${ERR}✘ Wrong password - aborting.${NC}" >&3
+SUDO_PASS=""
+ATTEMPT=0
+printf '%s' "$PROMPT_TXT" >&3
+while true; do
+    IFS= read -rs SUDO_PASS < /dev/tty
+    printf '\n' >&3
+    if printf '%s\n' "$SUDO_PASS" | sudo -S -k -v 2>/dev/null; then
+        break
     fi
-    exit 1
+    ATTEMPT=$((ATTEMPT + 1))
+    if (( ATTEMPT >= 3 )); then
+        echo -e "${ERR}${FAIL_TXT}${NC}" >&3
+        exit 1
+    fi
+    printf '%s' "$RETRY_TXT" >&3
+done
+
+sudo_p() { printf '%s\n' "$SUDO_PASS" | sudo -S -p '' "$@"; }
+
+SUDO_KEEPALIVE_PID=""
+( while true; do
+      sleep 50
+      kill -0 "$$" 2>/dev/null || exit 0
+      sudo -n -v 2>/dev/null || exit 0
+  done ) &
+SUDO_KEEPALIVE_PID=$!
+disown "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+
+if command -v visudo >/dev/null 2>&1; then
+    SUDOERS_TMP="$(mktemp)"
+    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
+    if sudo_p visudo -cf "$SUDOERS_TMP" &>/dev/null; then
+        sudo_p install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_NOPASSWD_FILE" 2>/dev/null || true
+    fi
+    rm -f "$SUDOERS_TMP"
 fi
 
-( while true; do sudo -n -v; sleep 60; done ) &
-SUDO_KEEPALIVE_PID=$!
+if [[ "$USE_RUN0" -eq 1 ]] || [[ ! -f "$SUDOERS_NOPASSWD_FILE" ]]; then
+    printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo_p tee "$RUN0_NOPASSWD_FILE" > /dev/null
+    sudo_p systemctl try-restart polkit 2>/dev/null || true
+    USE_RUN0=1
+fi
+
+SUDO_PASS=""
+unset SUDO_PASS
 
 printf '\033[?7l' >&3
 
@@ -232,6 +268,22 @@ fi
 
 show_progress 1 $TOTAL_STEPS "$MSG_PHASE_1"
 
+sudo systemctl stop packagekit.service packagekit-offline-update.service 2>/dev/null || true
+sudo systemctl mask packagekit.service packagekit-offline-update.service 2>/dev/null || true
+sudo killall -9 packagekitd 2>/dev/null || true
+
+wait_for_zypper_lock() {
+    local i=0
+    while pgrep -x zypper >/dev/null || pgrep -x packagekitd >/dev/null; do
+        if (( i++ >= 24 )); then
+            sudo systemctl stop packagekit.service 2>/dev/null || true
+            sudo killall -9 zypper packagekitd 2>/dev/null || true
+            sudo rm -f /var/run/zypp.pid 2>/dev/null || true
+            break
+        fi
+        sleep 5
+    done
+}
 disable_packagekit
 
 wait_for_zypper_lock
@@ -351,7 +403,6 @@ PACKAGES=(
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel
     gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
-    gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel
    )
 
 wait_for_zypper_lock
@@ -486,27 +537,13 @@ fi
 shopt -u nullglob
 rm -rf "$RPM_DIR"
 
-wait_for_zypper_lock
-sudo zypper --non-interactive install \
-    curl || true
-
-LSFG_SRC_DIR="$(mktemp -d)"
-if git clone --depth=1 https://git.lsfg-vk.dev/lsfg-vk.git "$LSFG_SRC_DIR/lsfg-vk"; then
-    (
-        cd "$LSFG_SRC_DIR/lsfg-vk"
-        cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DLSFGVK_BUILD_UI=ON
-        cmake --build build
-        sudo cmake --install build
-    ) || log_warn "Nie udało się zbudować lsfg-vk ze źródeł." "Failed to build lsfg-vk from source."
-else
-    log_warn "Nie udało się sklonować repozytorium lsfg-vk." "Failed to clone the lsfg-vk repository."
+LSFG_TMP="$(mktemp -d)"
+LSFG_URL="$(curl -fsSL https://builds.lsfg-vk.dev/ | grep -oE 'https://[^"'"'"']+linux[^"'"'"']*\.tar\.xz' | head -n1 || true)"
+if [[ -n "$LSFG_URL" ]] && curl -fsSL -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL"; then
+    mkdir -p "$HOME/.local"
+    tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local" || true
 fi
-rm -rf "$LSFG_SRC_DIR"
+rm -rf "$LSFG_TMP"
 
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
 
@@ -621,6 +658,7 @@ flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
 # ==========================================================
 show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
 
+sudo systemctl unmask packagekit.service packagekit-offline-update.service 2>/dev/null || true
 restore_packagekit
 sudo systemctl enable fstrim.timer || true
 sudo journalctl --vacuum-time=2d || true
@@ -679,6 +717,11 @@ if [[ -n "$ZSH_BIN" ]]; then
         grep -q "^fastfetch"          "$ZSHRC" || echo "fastfetch"                  >> "$ZSHRC"
     fi
 fi
+
+[[ -f "$RUN0_NOPASSWD_FILE" ]] && sudo rm -f "$RUN0_NOPASSWD_FILE"
+[[ "$USE_RUN0" -eq 1 ]] && sudo systemctl try-restart polkit 2>/dev/null || true
+sudo rm -f "$SUDOERS_NOPASSWD_FILE"
+[[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
 
 # =============================================================
 #  ETAP 4/4: CZYSZCZENIE
