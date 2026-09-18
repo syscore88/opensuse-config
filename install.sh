@@ -34,6 +34,8 @@ exec >>"$TMP_LOG" 2>&1
 cleanup_on_exit() {
     local exit_code=$?
     [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    [[ -n "${RUN0_NOPASSWD_FILE:-}" && -f "$RUN0_NOPASSWD_FILE" ]] && { sudo rm -f "$RUN0_NOPASSWD_FILE"; sudo systemctl try-restart polkit 2>/dev/null || true; }
+    [[ -n "${SUDOERS_NOPASSWD_FILE:-}" && -f "$SUDOERS_NOPASSWD_FILE" ]] && sudo rm -f "$SUDOERS_NOPASSWD_FILE"
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
@@ -507,10 +509,18 @@ shopt -u nullglob
 rm -rf "$RPM_DIR"
 
 LSFG_TMP="$(mktemp -d)"
-LSFG_URL="$(curl -fsSL https://builds.lsfg-vk.dev/ | grep -oE 'https://[^"'"'"']+linux[^"'"'"']*\.tar\.xz' | head -n1 || true)"
-if [[ -n "$LSFG_URL" ]] && curl -fsSL -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL"; then
+LSFG_UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+LSFG_HTML="$(curl -fsSL -A "$LSFG_UA" -e "https://builds.lsfg-vk.dev/" "https://builds.lsfg-vk.dev/" 2>/dev/null || true)"
+LSFG_URL="$(printf '%s' "$LSFG_HTML" | grep -oiE 'https?://[^"'"'"'<>[:space:]]+\.tar\.xz' | grep -i linux | head -n1 || true)"
+if [[ -z "$LSFG_URL" ]]; then
+    LSFG_URL="$(printf '%s' "$LSFG_HTML" | grep -oiE 'https?://[^"'"'"'<>[:space:]]+\.tar\.xz' | head -n1 || true)"
+fi
+if [[ -n "$LSFG_URL" ]] && curl -fsSL -A "$LSFG_UA" -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL" 2>/dev/null && tar -tf "$LSFG_TMP/lsfg-vk.tar.xz" &>/dev/null; then
     mkdir -p "$HOME/.local"
-    tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local" || true
+    tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local"
+    echo "lsfg-vk zainstalowano z $LSFG_URL"
+else
+    echo "lsfg-vk: nie udalo sie pobrac paczki z builds.lsfg-vk.dev, pomijam" >&2
 fi
 rm -rf "$LSFG_TMP"
 
@@ -686,11 +696,6 @@ if [[ -n "$ZSH_BIN" ]]; then
         grep -q "^fastfetch"          "$ZSHRC" || echo "fastfetch"                  >> "$ZSHRC"
     fi
 fi
-
-[[ -f "$RUN0_NOPASSWD_FILE" ]] && sudo rm -f "$RUN0_NOPASSWD_FILE"
-[[ "$USE_RUN0" -eq 1 ]] && sudo systemctl try-restart polkit 2>/dev/null || true
-sudo rm -f "$SUDOERS_NOPASSWD_FILE"
-[[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
 
 # =============================================================
 #  ETAP 4/4: CZYSZCZENIE
