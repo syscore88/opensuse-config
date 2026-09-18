@@ -266,7 +266,15 @@ elif [[ "$PRIV_MECH" == "sudo-run0shim" ]]; then
     if sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer 2>"$SUDO_ERR_TMP"; then
         rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
     else
-        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        if grep -qi "bad message" "$SUDO_ERR_TMP"; then
+            if [[ "$SCRIPT_LANG" == "pl" ]]; then
+                echo -e "${ERR}✘ run0/systemd nie może wystartować jednostki tymczasowej (Bad message) – to nie problem hasła.${NC}" >&3
+                echo -e "${ERR}   Zwykle oznacza to niezgodność wersji systemd po aktualizacji bez restartu. Zrestartuj system i uruchom skrypt ponownie.${NC}" >&3
+            else
+                echo -e "${ERR}✘ run0/systemd cannot start the transient unit (Bad message) - this is not a password problem.${NC}" >&3
+                echo -e "${ERR}   This usually means a systemd version mismatch after an update without a reboot. Reboot the system and re-run the script.${NC}" >&3
+            fi
+        elif [[ "$SCRIPT_LANG" == "pl" ]]; then
             echo -e "${ERR}✘ Nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli wymagane jest hasło roota (targetpw), podaj je przy kolejnej próbie.${NC}" >&3
             echo -e "${ERR}   Szczegóły sudo: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
         else
@@ -292,7 +300,15 @@ EOF
         run0 systemctl try-restart polkit 2>>"$RUN0_ERR_TMP" || true
         rm -f "$POLKIT_TMP" "$RUN0_ERR_TMP"
     else
-        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        if grep -qi "bad message" "$RUN0_ERR_TMP"; then
+            if [[ "$SCRIPT_LANG" == "pl" ]]; then
+                echo -e "${ERR}✘ run0/systemd nie może wystartować jednostki tymczasowej (Bad message) – to nie problem hasła.${NC}" >&3
+                echo -e "${ERR}   Zwykle oznacza to niezgodność wersji systemd po aktualizacji bez restartu. Zrestartuj system i uruchom skrypt ponownie.${NC}" >&3
+            else
+                echo -e "${ERR}✘ run0/systemd cannot start the transient unit (Bad message) - this is not a password problem.${NC}" >&3
+                echo -e "${ERR}   This usually means a systemd version mismatch after an update without a reboot. Reboot the system and re-run the script.${NC}" >&3
+            fi
+        elif [[ "$SCRIPT_LANG" == "pl" ]]; then
             echo -e "${ERR}✘ run0: nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli wymagane jest hasło roota (targetpw), podaj je przy kolejnej próbie.${NC}" >&3
             echo -e "${ERR}   Szczegóły run0: $(tr -d '\n' < "$RUN0_ERR_TMP")${NC}" >&3
         else
