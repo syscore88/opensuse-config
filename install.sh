@@ -189,60 +189,29 @@ if sudo --version 2>/dev/null | grep -qi "run0"; then
 fi
 
 if [[ "$SCRIPT_LANG" == "pl" ]]; then
-    PROMPT_TXT='Wymagane hasło sudo: '
-    RETRY_TXT='Błędne hasło, spróbuj ponownie: '
-    FAIL_TXT='✘ Nieprawidłowe hasło sudo - przerywam.'
+    printf 'Wymagane hasło sudo:\n' >&3
 else
-    PROMPT_TXT='sudo password required: '
-    RETRY_TXT='Wrong password, try again: '
-    FAIL_TXT='✘ Invalid sudo password - aborting.'
+    printf 'sudo password required:\n' >&3
 fi
+sudo -v
 
-SUDO_PASS=""
-ATTEMPT=0
-printf '%s' "$PROMPT_TXT" >&3
-while true; do
-    IFS= read -rs SUDO_PASS < /dev/tty
-    printf '\n' >&3
-    if printf '%s\n' "$SUDO_PASS" | sudo -S -k -v 2>/dev/null; then
-        break
-    fi
-    ATTEMPT=$((ATTEMPT + 1))
-    if (( ATTEMPT >= 3 )); then
-        echo -e "${ERR}${FAIL_TXT}${NC}" >&3
-        exit 1
-    fi
-    printf '%s' "$RETRY_TXT" >&3
-done
-
-sudo_p() { printf '%s\n' "$SUDO_PASS" | sudo -S -p '' "$@"; }
-
-SUDO_KEEPALIVE_PID=""
-( while true; do
-      sleep 50
-      kill -0 "$$" 2>/dev/null || exit 0
-      sudo -n -v 2>/dev/null || exit 0
-  done ) &
+( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
 SUDO_KEEPALIVE_PID=$!
-disown "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
 
 if command -v visudo >/dev/null 2>&1; then
     SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
-    if sudo_p visudo -cf "$SUDOERS_TMP" &>/dev/null; then
-        sudo_p install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_NOPASSWD_FILE" 2>/dev/null || true
+    if sudo visudo -cf "$SUDOERS_TMP" &>/dev/null; then
+        sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_NOPASSWD_FILE" 2>/dev/null || true
     fi
     rm -f "$SUDOERS_TMP"
 fi
 
 if [[ "$USE_RUN0" -eq 1 ]] || [[ ! -f "$SUDOERS_NOPASSWD_FILE" ]]; then
-    printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo_p tee "$RUN0_NOPASSWD_FILE" > /dev/null
-    sudo_p systemctl try-restart polkit 2>/dev/null || true
+    printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo tee "$RUN0_NOPASSWD_FILE" > /dev/null
+    sudo systemctl try-restart polkit 2>/dev/null || true
     USE_RUN0=1
 fi
-
-SUDO_PASS=""
-unset SUDO_PASS
 
 printf '\033[?7l' >&3
 
