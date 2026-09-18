@@ -192,7 +192,14 @@ command -v visudo >/dev/null 2>&1 && HAVE_VISUDO=1
 HAVE_RUN0=0
 command -v run0 >/dev/null 2>&1 && HAVE_RUN0=1
 
-if [[ "$HAVE_SUDO" -eq 1 && "$HAVE_VISUDO" -eq 1 ]]; then
+SUDO_IS_RUN0_SHIM=0
+if [[ "$HAVE_SUDO" -eq 1 ]]; then
+    sudo --version 2>&1 | grep -qi "run0" && SUDO_IS_RUN0_SHIM=1
+fi
+
+if [[ "$HAVE_SUDO" -eq 1 && "$SUDO_IS_RUN0_SHIM" -eq 1 ]]; then
+    PRIV_MECH="sudo-run0shim"
+elif [[ "$HAVE_SUDO" -eq 1 && "$HAVE_VISUDO" -eq 1 ]]; then
     PRIV_MECH="sudo"
 elif [[ "$HAVE_SUDO" -eq 1 ]]; then
     PRIV_MECH="sudo-novisudo"
@@ -248,6 +255,25 @@ if [[ "$PRIV_MECH" == "sudo" || "$PRIV_MECH" == "sudo-novisudo" ]]; then
         fi
         rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
         unset SUDO_PASSWORD
+        exit 1
+    fi
+
+elif [[ "$PRIV_MECH" == "sudo-run0shim" ]]; then
+    SUDOERS_TMP="$(mktemp)"
+    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
+
+    SUDO_ERR_TMP="$(mktemp)"
+    if sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer 2>"$SUDO_ERR_TMP"; then
+        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
+    else
+        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+            echo -e "${ERR}✘ Nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli wymagane jest hasło roota (targetpw), podaj je przy kolejnej próbie.${NC}" >&3
+            echo -e "${ERR}   Szczegóły sudo: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
+        else
+            echo -e "${ERR}✘ Failed to grant temporary privileges - aborting. If the root password (targetpw) is required, provide it on retry.${NC}" >&3
+            echo -e "${ERR}   sudo details: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
+        fi
+        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
         exit 1
     fi
 
