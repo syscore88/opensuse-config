@@ -33,7 +33,6 @@ exec >>"$TMP_LOG" 2>&1
 
 cleanup_on_exit() {
     local exit_code=$?
-    [ -n "${SUDO_KEEPALIVE_PID:-}" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
@@ -187,6 +186,18 @@ if ! command -v visudo >/dev/null 2>&1 || sudo --version 2>/dev/null | grep -qi 
     USE_RUN0=1
 fi
 
+if [[ "$SCRIPT_LANG" == "pl" ]]; then
+    printf 'Wymagane hasło sudo: ' >&3
+else
+    printf 'sudo password required: ' >&3
+fi
+if [[ -r /dev/tty ]]; then
+    IFS= read -rs SUDO_PASSWORD < /dev/tty || true
+else
+    IFS= read -rs SUDO_PASSWORD || true
+fi
+printf '\n' >&3
+
 if [[ "$USE_RUN0" -eq 1 ]]; then
     POLKIT_TMP="$(mktemp)"
     cat > "$POLKIT_TMP" << EOF
@@ -196,35 +207,21 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
-    if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        printf 'Wymagane uwierzytelnienie administratora:\n' >&3
-    else
-        printf 'administrator authentication required:\n' >&3
-    fi
-    if ! sudo install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" 2>&3; then
+    if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" &>/dev/null; then
+        printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' systemctl try-restart polkit 2>/dev/null || true
         rm -f "$POLKIT_TMP"
+        unset SUDO_PASSWORD
+    else
+        rm -f "$POLKIT_TMP"
+        unset SUDO_PASSWORD
         if [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ Nie udało się nadać uprawnień tymczasowych – przerywam.${NC}" >&3
+            echo -e "${ERR}✘ Nieprawidłowe hasło lub nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli w /etc/sudoers działa opcja targetpw, podaj hasło roota.${NC}" >&3
         else
-            echo -e "${ERR}✘ Failed to grant temporary privileges - aborting.${NC}" >&3
+            echo -e "${ERR}✘ Wrong password or failed to grant temporary privileges - aborting. If targetpw is set in /etc/sudoers, enter the root password.${NC}" >&3
         fi
         exit 1
     fi
-    rm -f "$POLKIT_TMP"
-    sudo systemctl try-restart polkit 2>/dev/null || true
 else
-    if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        printf 'Wymagane hasło sudo: ' >&3
-    else
-        printf 'sudo password required: ' >&3
-    fi
-    if [[ -r /dev/tty ]]; then
-        IFS= read -rs SUDO_PASSWORD < /dev/tty || true
-    else
-        IFS= read -rs SUDO_PASSWORD || true
-    fi
-    printf '\n' >&3
-
     SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
 
@@ -242,15 +239,15 @@ else
         fi
         exit 1
     fi
+fi
 
-    if ! sudo -n true 2>/dev/null; then
-        if [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ Nie udało się uzyskać uprawnień bez hasła – przerywam.${NC}" >&3
-        else
-            echo -e "${ERR}✘ Could not obtain passwordless privileges - aborting.${NC}" >&3
-        fi
-        exit 1
+if ! sudo -n true 2>/dev/null; then
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        echo -e "${ERR}✘ Nie udało się uzyskać uprawnień bez hasła – przerywam.${NC}" >&3
+    else
+        echo -e "${ERR}✘ Could not obtain passwordless privileges - aborting.${NC}" >&3
     fi
+    exit 1
 fi
 
 printf '\033[?7l' >&3
