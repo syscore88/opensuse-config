@@ -33,6 +33,7 @@ exec >>"$TMP_LOG" 2>&1
 
 cleanup_on_exit() {
     local exit_code=$?
+    [ -n "${SUDO_KEEPALIVE_PID:-}" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
@@ -76,15 +77,12 @@ disable_packagekit() {
     fi
     sudo systemctl mask "${PACKAGEKIT_UNITS[@]}" 2>/dev/null || true
     PACKAGEKIT_MASKED=1
-    log_info "PackageKit zatrzymany i zamaskowany na czas instalacji." \
-             "PackageKit stopped and masked for the duration of the installation."
 }
 
 restore_packagekit() {
     [[ "${PACKAGEKIT_MASKED:-0}" -eq 1 ]] || return 0
     sudo systemctl unmask "${PACKAGEKIT_UNITS[@]}" 2>/dev/null || true
     PACKAGEKIT_MASKED=0
-    log_info "PackageKit odmaskowany." "PackageKit unmasked."
 }
 
 _zypper_lock_busy() {
@@ -189,33 +187,68 @@ if ! command -v visudo >/dev/null 2>&1 || sudo --version 2>/dev/null | grep -qi 
     USE_RUN0=1
 fi
 
-if [[ "$SCRIPT_LANG" == "pl" ]]; then
-    printf 'Wymagane hasło sudo:\n' >&3
-else
-    printf 'sudo password required:\n' >&3
-fi
-sudo -v
-
 if [[ "$USE_RUN0" -eq 1 ]]; then
-    sudo tee "$RUN0_NOPASSWD_FILE" > /dev/null << EOF
+    POLKIT_TMP="$(mktemp)"
+    cat > "$POLKIT_TMP" << EOF
 polkit.addRule(function(action, subject) {
-    if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        subject.user == "$CURRENT_USER") {
+    if (subject.user == "$CURRENT_USER") {
         return polkit.Result.YES;
     }
 });
 EOF
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        printf 'Wymagane uwierzytelnienie administratora:\n' >&3
+    else
+        printf 'administrator authentication required:\n' >&3
+    fi
+    if ! sudo install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" 2>&3; then
+        rm -f "$POLKIT_TMP"
+        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+            echo -e "${ERR}✘ Nie udało się nadać uprawnień tymczasowych – przerywam.${NC}" >&3
+        else
+            echo -e "${ERR}✘ Failed to grant temporary privileges - aborting.${NC}" >&3
+        fi
+        exit 1
+    fi
+    rm -f "$POLKIT_TMP"
     sudo systemctl try-restart polkit 2>/dev/null || true
 else
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        printf 'Wymagane hasło sudo: ' >&3
+    else
+        printf 'sudo password required: ' >&3
+    fi
+    if [[ -r /dev/tty ]]; then
+        IFS= read -rs SUDO_PASSWORD < /dev/tty || true
+    else
+        IFS= read -rs SUDO_PASSWORD || true
+    fi
+    printf '\n' >&3
+
     SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
 
-    if sudo visudo -cf "$SUDOERS_TMP" &>/dev/null; then
-        sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer
+    if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' visudo -cf "$SUDOERS_TMP" &>/dev/null \
+       && printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer &>/dev/null; then
         rm -f "$SUDOERS_TMP"
+        unset SUDO_PASSWORD
     else
         rm -f "$SUDOERS_TMP"
-        echo -e "${ERR}✘ Nieprawidłowa składnia pliku sudoers – przerywam.${NC}" >&3
+        unset SUDO_PASSWORD
+        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+            echo -e "${ERR}✘ Nieprawidłowe hasło lub składnia pliku sudoers – przerywam. Jeśli w /etc/sudoers działa opcja targetpw, podaj hasło roota.${NC}" >&3
+        else
+            echo -e "${ERR}✘ Wrong password or invalid sudoers syntax - aborting. If targetpw is set in /etc/sudoers, enter the root password.${NC}" >&3
+        fi
+        exit 1
+    fi
+
+    if ! sudo -n true 2>/dev/null; then
+        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+            echo -e "${ERR}✘ Nie udało się uzyskać uprawnień bez hasła – przerywam.${NC}" >&3
+        else
+            echo -e "${ERR}✘ Could not obtain passwordless privileges - aborting.${NC}" >&3
+        fi
         exit 1
     fi
 fi
