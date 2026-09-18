@@ -181,24 +181,77 @@ if [[ -z "$CURRENT_USER" ]]; then
 fi
 
 RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
+
+# ==========================================================
+# WYKRYWANIE RZECZYWISTEGO MECHANIZMU PODNOSZENIA UPRAWNIEŃ
+# ==========================================================
+HAVE_SUDO=0
+command -v sudo >/dev/null 2>&1 && HAVE_SUDO=1
+HAVE_VISUDO=0
+command -v visudo >/dev/null 2>&1 && HAVE_VISUDO=1
+HAVE_RUN0=0
+command -v run0 >/dev/null 2>&1 && HAVE_RUN0=1
+
+if [[ "$HAVE_SUDO" -eq 1 && "$HAVE_VISUDO" -eq 1 ]]; then
+    PRIV_MECH="sudo"
+elif [[ "$HAVE_SUDO" -eq 1 && "$HAVE_RUN0" -eq 0 ]]; then
+    PRIV_MECH="sudo-novisudo"
+elif [[ "$HAVE_RUN0" -eq 1 ]]; then
+    PRIV_MECH="run0"
+else
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        echo -e "${ERR}✘ Nie znaleziono w systemie ani 'sudo', ani 'run0' - nie można uzyskać uprawnień administratora.${NC}" >&3
+    else
+        echo -e "${ERR}✘ Neither 'sudo' nor 'run0' was found on this system - cannot obtain admin privileges.${NC}" >&3
+    fi
+    exit 1
+fi
+
 USE_RUN0=0
-if ! command -v visudo >/dev/null 2>&1 || sudo --version 2>/dev/null | grep -qi "run0"; then
-    USE_RUN0=1
-fi
+[[ "$PRIV_MECH" == "run0" ]] && USE_RUN0=1
 
-if [[ "$SCRIPT_LANG" == "pl" ]]; then
-    printf 'Wymagane hasło sudo: ' >&3
-else
-    printf 'sudo password required: ' >&3
-fi
-if [[ -r /dev/tty ]]; then
-    IFS= read -rs SUDO_PASSWORD < /dev/tty || true
-else
-    IFS= read -rs SUDO_PASSWORD || true
-fi
-printf '\n' >&3
+if [[ "$PRIV_MECH" == "sudo" || "$PRIV_MECH" == "sudo-novisudo" ]]; then
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        printf 'Wymagane hasło sudo: ' >&3
+    else
+        printf 'sudo password required: ' >&3
+    fi
+    if [[ -r /dev/tty ]]; then
+        IFS= read -rs SUDO_PASSWORD < /dev/tty || true
+    else
+        IFS= read -rs SUDO_PASSWORD || true
+    fi
+    printf '\n' >&3
 
-if [[ "$USE_RUN0" -eq 1 ]]; then
+    SUDOERS_TMP="$(mktemp)"
+    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
+
+    SUDO_ERR_TMP="$(mktemp)"
+    AUTH_OK=1
+    if [[ "$PRIV_MECH" == "sudo" ]]; then
+        printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' visudo -cf "$SUDOERS_TMP" >"$SUDO_ERR_TMP" 2>&1 || AUTH_OK=0
+    fi
+    if [[ "$AUTH_OK" -eq 1 ]]; then
+        printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer >"$SUDO_ERR_TMP" 2>&1 || AUTH_OK=0
+    fi
+
+    if [[ "$AUTH_OK" -eq 1 ]]; then
+        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
+        unset SUDO_PASSWORD
+    else
+        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+            echo -e "${ERR}✘ Nieprawidłowe hasło lub składnia pliku sudoers – przerywam. Jeśli w /etc/sudoers działa opcja targetpw, podaj hasło roota.${NC}" >&3
+            echo -e "${ERR}   Szczegóły sudo: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
+        else
+            echo -e "${ERR}✘ Wrong password or invalid sudoers syntax - aborting. If targetpw is set in /etc/sudoers, enter the root password.${NC}" >&3
+            echo -e "${ERR}   sudo details: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
+        fi
+        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
+        unset SUDO_PASSWORD
+        exit 1
+    fi
+
+else
     POLKIT_TMP="$(mktemp)"
     cat > "$POLKIT_TMP" << EOF
 polkit.addRule(function(action, subject) {
@@ -207,38 +260,36 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
-    if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" &>/dev/null; then
-        printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' systemctl try-restart polkit 2>/dev/null || true
-        rm -f "$POLKIT_TMP"
-        unset SUDO_PASSWORD
-    else
-        rm -f "$POLKIT_TMP"
-        unset SUDO_PASSWORD
-        if [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ Nieprawidłowe hasło lub nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli w /etc/sudoers działa opcja targetpw, podaj hasło roota.${NC}" >&3
-        else
-            echo -e "${ERR}✘ Wrong password or failed to grant temporary privileges - aborting. If targetpw is set in /etc/sudoers, enter the root password.${NC}" >&3
-        fi
-        exit 1
-    fi
-else
-    SUDOERS_TMP="$(mktemp)"
-    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
 
-    if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' visudo -cf "$SUDOERS_TMP" &>/dev/null \
-       && printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer &>/dev/null; then
-        rm -f "$SUDOERS_TMP"
-        unset SUDO_PASSWORD
+    RUN0_ERR_TMP="$(mktemp)"
+    if run0 install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" 2>"$RUN0_ERR_TMP"; then
+        run0 systemctl try-restart polkit 2>>"$RUN0_ERR_TMP" || true
+        rm -f "$POLKIT_TMP" "$RUN0_ERR_TMP"
     else
-        rm -f "$SUDOERS_TMP"
-        unset SUDO_PASSWORD
         if [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ Nieprawidłowe hasło lub składnia pliku sudoers – przerywam. Jeśli w /etc/sudoers działa opcja targetpw, podaj hasło roota.${NC}" >&3
+            echo -e "${ERR}✘ run0: nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli wymagane jest hasło roota (targetpw), podaj je przy kolejnej próbie.${NC}" >&3
+            echo -e "${ERR}   Szczegóły run0: $(tr -d '\n' < "$RUN0_ERR_TMP")${NC}" >&3
         else
-            echo -e "${ERR}✘ Wrong password or invalid sudoers syntax - aborting. If targetpw is set in /etc/sudoers, enter the root password.${NC}" >&3
+            echo -e "${ERR}✘ run0: failed to grant temporary privileges - aborting. If the root password (targetpw) is required, provide it on retry.${NC}" >&3
+            echo -e "${ERR}   run0 details: $(tr -d '\n' < "$RUN0_ERR_TMP")${NC}" >&3
         fi
+        rm -f "$POLKIT_TMP" "$RUN0_ERR_TMP"
         exit 1
     fi
+
+    sudo() {
+        local args=() a skip_next=0
+        for a in "$@"; do
+            if [[ "$skip_next" -eq 1 ]]; then skip_next=0; continue; fi
+            case "$a" in
+                -n|-S) continue ;;
+                -p) skip_next=1; continue ;;
+                -p*) continue ;;
+                *) args+=("$a") ;;
+            esac
+        done
+        run0 "${args[@]}"
+    }
 fi
 
 if ! sudo -n true 2>/dev/null; then
