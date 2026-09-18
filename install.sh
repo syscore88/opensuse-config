@@ -4,11 +4,11 @@
 # ==========================================================
 
 set -Eeuo pipefail
-export ZYPPER_NONINTERACTIVE=1 
+export ZYPPER_NONINTERACTIVE=1
 export ZYPP_LOCK_TIMEOUT=300
 export PATH="/usr/sbin:/sbin:$PATH"
 
-detect_system_lang() { 
+detect_system_lang() {
     local sys_lang="${LANG:-}"
     [[ -z "$sys_lang" ]] && sys_lang="${LC_ALL:-${LC_MESSAGES:-}}"
     if [[ "$sys_lang" == pl* ]]; then
@@ -34,6 +34,7 @@ exec >>"$TMP_LOG" 2>&1
 cleanup_on_exit() {
     local exit_code=$?
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
+    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
     if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
@@ -180,168 +181,32 @@ if [[ -z "$CURRENT_USER" ]]; then
     exit 1
 fi
 
-RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
-
-# ==========================================================
-# WYKRYWANIE RZECZYWISTEGO MECHANIZMU PODNOSZENIA UPRAWNIEŃ
-# ==========================================================
-HAVE_SUDO=0
-command -v sudo >/dev/null 2>&1 && HAVE_SUDO=1
-HAVE_VISUDO=0
-command -v visudo >/dev/null 2>&1 && HAVE_VISUDO=1
-HAVE_RUN0=0
-command -v run0 >/dev/null 2>&1 && HAVE_RUN0=1
-
-SUDO_IS_RUN0_SHIM=0
-if [[ "$HAVE_SUDO" -eq 1 ]]; then
-    sudo --version 2>&1 | grep -qi "run0" && SUDO_IS_RUN0_SHIM=1
-fi
-
-if [[ "$HAVE_SUDO" -eq 1 && "$SUDO_IS_RUN0_SHIM" -eq 1 ]]; then
-    PRIV_MECH="sudo-run0shim"
-elif [[ "$HAVE_SUDO" -eq 1 && "$HAVE_VISUDO" -eq 1 ]]; then
-    PRIV_MECH="sudo"
-elif [[ "$HAVE_SUDO" -eq 1 ]]; then
-    PRIV_MECH="sudo-novisudo"
-elif [[ "$HAVE_RUN0" -eq 1 ]]; then
-    PRIV_MECH="run0"
+if [[ "$SCRIPT_LANG" == "pl" ]]; then
+    printf 'Wymagane hasło sudo: ' >&3
 else
+    printf 'sudo password required: ' >&3
+fi
+if [[ -r /dev/tty ]]; then
+    IFS= read -rs SUDO_PASSWORD < /dev/tty || true
+else
+    IFS= read -rs SUDO_PASSWORD || true
+fi
+printf '\n' >&3
+
+if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' -v &>/dev/null; then
+    unset SUDO_PASSWORD
+else
+    unset SUDO_PASSWORD
     if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        echo -e "${ERR}✘ Nie znaleziono w systemie ani 'sudo', ani 'run0' - nie można uzyskać uprawnień administratora.${NC}" >&3
+        echo -e "${ERR}✘ Nieprawidłowe hasło – przerywam.${NC}" >&3
     else
-        echo -e "${ERR}✘ Neither 'sudo' nor 'run0' was found on this system - cannot obtain admin privileges.${NC}" >&3
+        echo -e "${ERR}✘ Wrong password - aborting.${NC}" >&3
     fi
     exit 1
 fi
 
-USE_RUN0=0
-[[ "$PRIV_MECH" == "run0" ]] && USE_RUN0=1
-
-if [[ "$PRIV_MECH" == "sudo" || "$PRIV_MECH" == "sudo-novisudo" ]]; then
-    if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        printf 'Wymagane hasło sudo: ' >&3
-    else
-        printf 'sudo password required: ' >&3
-    fi
-    if [[ -r /dev/tty ]]; then
-        IFS= read -rs SUDO_PASSWORD < /dev/tty || true
-    else
-        IFS= read -rs SUDO_PASSWORD || true
-    fi
-    printf '\n' >&3
-
-    SUDOERS_TMP="$(mktemp)"
-    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
-
-    SUDO_ERR_TMP="$(mktemp)"
-    AUTH_OK=1
-    if [[ "$PRIV_MECH" == "sudo" ]]; then
-        printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' visudo -cf "$SUDOERS_TMP" >"$SUDO_ERR_TMP" 2>&1 || AUTH_OK=0
-    fi
-    if [[ "$AUTH_OK" -eq 1 ]]; then
-        printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer >"$SUDO_ERR_TMP" 2>&1 || AUTH_OK=0
-    fi
-
-    if [[ "$AUTH_OK" -eq 1 ]]; then
-        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
-        unset SUDO_PASSWORD
-    else
-        if [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ Nieprawidłowe hasło lub składnia pliku sudoers – przerywam. Jeśli w /etc/sudoers działa opcja targetpw, podaj hasło roota.${NC}" >&3
-            echo -e "${ERR}   Szczegóły sudo: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
-        else
-            echo -e "${ERR}✘ Wrong password or invalid sudoers syntax - aborting. If targetpw is set in /etc/sudoers, enter the root password.${NC}" >&3
-            echo -e "${ERR}   sudo details: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
-        fi
-        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
-        unset SUDO_PASSWORD
-        exit 1
-    fi
-
-elif [[ "$PRIV_MECH" == "sudo-run0shim" ]]; then
-    SUDOERS_TMP="$(mktemp)"
-    printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
-
-    SUDO_ERR_TMP="$(mktemp)"
-    if sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-installer 2>"$SUDO_ERR_TMP"; then
-        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
-    else
-        if grep -qi "bad message" "$SUDO_ERR_TMP"; then
-            if [[ "$SCRIPT_LANG" == "pl" ]]; then
-                echo -e "${ERR}✘ run0/systemd nie może wystartować jednostki tymczasowej (Bad message) – to nie problem hasła.${NC}" >&3
-                echo -e "${ERR}   Zwykle oznacza to niezgodność wersji systemd po aktualizacji bez restartu. Zrestartuj system i uruchom skrypt ponownie.${NC}" >&3
-            else
-                echo -e "${ERR}✘ run0/systemd cannot start the transient unit (Bad message) - this is not a password problem.${NC}" >&3
-                echo -e "${ERR}   This usually means a systemd version mismatch after an update without a reboot. Reboot the system and re-run the script.${NC}" >&3
-            fi
-        elif [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ Nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli wymagane jest hasło roota (targetpw), podaj je przy kolejnej próbie.${NC}" >&3
-            echo -e "${ERR}   Szczegóły sudo: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
-        else
-            echo -e "${ERR}✘ Failed to grant temporary privileges - aborting. If the root password (targetpw) is required, provide it on retry.${NC}" >&3
-            echo -e "${ERR}   sudo details: $(tr -d '\n' < "$SUDO_ERR_TMP")${NC}" >&3
-        fi
-        rm -f "$SUDOERS_TMP" "$SUDO_ERR_TMP"
-        exit 1
-    fi
-
-else
-    POLKIT_TMP="$(mktemp)"
-    cat > "$POLKIT_TMP" << EOF
-polkit.addRule(function(action, subject) {
-    if (subject.user == "$CURRENT_USER") {
-        return polkit.Result.YES;
-    }
-});
-EOF
-
-    RUN0_ERR_TMP="$(mktemp)"
-    if run0 install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" 2>"$RUN0_ERR_TMP"; then
-        run0 systemctl try-restart polkit 2>>"$RUN0_ERR_TMP" || true
-        rm -f "$POLKIT_TMP" "$RUN0_ERR_TMP"
-    else
-        if grep -qi "bad message" "$RUN0_ERR_TMP"; then
-            if [[ "$SCRIPT_LANG" == "pl" ]]; then
-                echo -e "${ERR}✘ run0/systemd nie może wystartować jednostki tymczasowej (Bad message) – to nie problem hasła.${NC}" >&3
-                echo -e "${ERR}   Zwykle oznacza to niezgodność wersji systemd po aktualizacji bez restartu. Zrestartuj system i uruchom skrypt ponownie.${NC}" >&3
-            else
-                echo -e "${ERR}✘ run0/systemd cannot start the transient unit (Bad message) - this is not a password problem.${NC}" >&3
-                echo -e "${ERR}   This usually means a systemd version mismatch after an update without a reboot. Reboot the system and re-run the script.${NC}" >&3
-            fi
-        elif [[ "$SCRIPT_LANG" == "pl" ]]; then
-            echo -e "${ERR}✘ run0: nie udało się nadać uprawnień tymczasowych – przerywam. Jeśli wymagane jest hasło roota (targetpw), podaj je przy kolejnej próbie.${NC}" >&3
-            echo -e "${ERR}   Szczegóły run0: $(tr -d '\n' < "$RUN0_ERR_TMP")${NC}" >&3
-        else
-            echo -e "${ERR}✘ run0: failed to grant temporary privileges - aborting. If the root password (targetpw) is required, provide it on retry.${NC}" >&3
-            echo -e "${ERR}   run0 details: $(tr -d '\n' < "$RUN0_ERR_TMP")${NC}" >&3
-        fi
-        rm -f "$POLKIT_TMP" "$RUN0_ERR_TMP"
-        exit 1
-    fi
-
-    sudo() {
-        local args=() a skip_next=0
-        for a in "$@"; do
-            if [[ "$skip_next" -eq 1 ]]; then skip_next=0; continue; fi
-            case "$a" in
-                -n|-S) continue ;;
-                -p) skip_next=1; continue ;;
-                -p*) continue ;;
-                *) args+=("$a") ;;
-            esac
-        done
-        run0 "${args[@]}"
-    }
-fi
-
-if ! sudo -n true 2>/dev/null; then
-    if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        echo -e "${ERR}✘ Nie udało się uzyskać uprawnień bez hasła – przerywam.${NC}" >&3
-    else
-        echo -e "${ERR}✘ Could not obtain passwordless privileges - aborting.${NC}" >&3
-    fi
-    exit 1
-fi
+( while true; do sudo -n -v; sleep 60; done ) &
+SUDO_KEEPALIVE_PID=$!
 
 printf '\033[?7l' >&3
 
@@ -813,13 +678,6 @@ if [[ -n "$ZSH_BIN" ]]; then
         grep -q "^export LC_ALL=" "$ZSHRC" || echo "export LC_ALL=${SHELL_LOCALE}" >> "$ZSHRC"
         grep -q "^fastfetch"          "$ZSHRC" || echo "fastfetch"                  >> "$ZSHRC"
     fi
-fi
-
-if [[ "$USE_RUN0" -eq 1 ]]; then
-    sudo rm -f "$RUN0_NOPASSWD_FILE"
-    sudo systemctl try-restart polkit 2>/dev/null || true
-else
-    sudo rm -f /etc/sudoers.d/99-temp-installer
 fi
 
 # =============================================================
