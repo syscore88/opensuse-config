@@ -34,9 +34,15 @@ exec >>"$TMP_LOG" 2>&1
 cleanup_on_exit() {
     local exit_code=$?
     [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-    [[ -n "${RUN0_NOPASSWD_FILE:-}" && -f "$RUN0_NOPASSWD_FILE" ]] && { sudo rm -f "$RUN0_NOPASSWD_FILE"; sudo systemctl try-restart polkit 2>/dev/null || true; }
-    [[ -n "${SUDOERS_NOPASSWD_FILE:-}" && -f "$SUDOERS_NOPASSWD_FILE" ]] && sudo rm -f "$SUDOERS_NOPASSWD_FILE"
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
+    if [[ -n "${SUDO_READY:-}" ]]; then
+        if [[ -n "${RUN0_NOPASSWD_FILE:-}" ]]; then
+            sudo sh -c 'rm -f "$1"; systemctl try-restart polkit 2>/dev/null || true' _ "$RUN0_NOPASSWD_FILE" || true
+        fi
+        if [[ -n "${SUDOERS_NOPASSWD_FILE:-}" ]]; then
+            sudo rm -f "$SUDOERS_NOPASSWD_FILE" || true
+        fi
+    fi
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
     if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
@@ -216,6 +222,7 @@ else
     ) &
     SUDO_KEEPALIVE_PID=$!
 fi
+SUDO_READY=1
 
 if command -v visudo >/dev/null 2>&1; then
     SUDOERS_TMP="$(mktemp)"
@@ -691,7 +698,7 @@ wait_for_zypper_lock
 sudo zypper install -y flatpak 2>/dev/null || true
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 flatpak update --appstream 2>/dev/null || true
- 
+
 flatpak install --user -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
 flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
 
