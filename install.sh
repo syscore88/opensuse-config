@@ -691,7 +691,7 @@ wait_for_zypper_lock
 sudo zypper install -y flatpak 2>/dev/null || true
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 flatpak update --appstream 2>/dev/null || true
-
+ 
 flatpak install --user -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
 flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
 
