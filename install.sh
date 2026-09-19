@@ -35,14 +35,6 @@ cleanup_on_exit() {
     local exit_code=$?
     [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
-    if [[ -n "${SUDO_READY:-}" ]]; then
-        if [[ -n "${RUN0_NOPASSWD_FILE:-}" ]]; then
-            sudo sh -c 'rm -f "$1"; systemctl try-restart polkit 2>/dev/null || true' _ "$RUN0_NOPASSWD_FILE" || true
-        fi
-        if [[ -n "${SUDOERS_NOPASSWD_FILE:-}" ]]; then
-            sudo rm -f "$SUDOERS_NOPASSWD_FILE" || true
-        fi
-    fi
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
     if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
@@ -57,6 +49,11 @@ cleanup_on_exit() {
         fi
     fi
     rm -f "$TMP_LOG"
+    if [[ -n "${SUDO_READY:-}" ]]; then
+        local do_reboot=0
+        [[ "$exit_code" -eq 0 && "${DO_REBOOT:-0}" -eq 1 ]] && do_reboot=1
+        sudo sh -c 'rm -f "$1" "$2"; systemctl try-restart polkit 2>/dev/null; [ "$3" = 1 ] && systemctl reboot' _ "${RUN0_NOPASSWD_FILE:-}" "${SUDOERS_NOPASSWD_FILE:-}" "$do_reboot" || true
+    fi
 }
 trap cleanup_on_exit EXIT
 
@@ -791,7 +788,8 @@ echo -en "${INFO}==> ${RESTART_PROMPT}${NC}" >&3
 read -r RESTART_CHOICE < /dev/tty
 case "$RESTART_CHOICE" in
     [YyTt]*)
-        systemctl reboot
+        DO_REBOOT=1
+        exit 0
         ;;
     *)
         exit 0
