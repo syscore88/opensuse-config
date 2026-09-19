@@ -195,8 +195,27 @@ if [[ "$SCRIPT_LANG" == "pl" ]]; then
 else
     printf 'sudo password required:\n' >&3
 fi
-( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
-SUDO_KEEPALIVE_PID=$!
+if [[ "$USE_RUN0" -eq 1 ]]; then
+    if ! sudo true; then
+        log_err "Nie udało się uzyskać uprawnień (run0)." "Failed to obtain privileges (run0)."
+        exit 1
+    fi
+else
+    if ! sudo -v; then
+        log_err "Nie udało się uzyskać uprawnień sudo." "Failed to obtain sudo privileges."
+        exit 1
+    fi
+    (
+        trap - ERR
+        set +e
+        while true; do
+            sudo -n true 2>/dev/null
+            sleep 60
+            kill -0 "$$" 2>/dev/null || exit 0
+        done
+    ) &
+    SUDO_KEEPALIVE_PID=$!
+fi
 
 if command -v visudo >/dev/null 2>&1; then
     SUDOERS_TMP="$(mktemp)"
