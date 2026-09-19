@@ -398,6 +398,7 @@ PACKAGES=(
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel
     gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
+    gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel
    )
 
 wait_for_zypper_lock
@@ -533,20 +534,58 @@ shopt -u nullglob
 rm -rf "$RPM_DIR"
 
 LSFG_TMP="$(mktemp -d)"
+LSFG_SRC_DIR="$(mktemp -d)"
 LSFG_UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-LSFG_HTML="$(curl -fsSL -A "$LSFG_UA" -e "https://builds.lsfg-vk.dev/" "https://builds.lsfg-vk.dev/" 2>/dev/null || true)"
-LSFG_URL="$(printf '%s' "$LSFG_HTML" | grep -oiE 'https?://[^"'"'"'<>[:space:]]+\.tar\.xz' | grep -i linux | head -n1 || true)"
-if [[ -z "$LSFG_URL" ]]; then
-    LSFG_URL="$(printf '%s' "$LSFG_HTML" | grep -oiE 'https?://[^"'"'"'<>[:space:]]+\.tar\.xz' | head -n1 || true)"
+LSFG_BASE="https://builds.lsfg-vk.dev"
+LSFG_URL=""
+LSFG_INSTALLED=0
+if LSFG_HTML="$(curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" "$LSFG_BASE/" 2>/dev/null)"; then
+    mapfile -t LSFG_CANDIDATES < <(printf '%s' "$LSFG_HTML" | grep -oiE '[A-Za-z0-9._~:/%+@-]+\.tar\.xz' | awk '!seen[$0]++' || true)
+    LSFG_PATH=""
+    for c in "${LSFG_CANDIDATES[@]}"; do
+        if [[ "${c,,}" == *linux* ]]; then
+            LSFG_PATH="$c"
+            break
+        fi
+    done
+    if [[ -z "$LSFG_PATH" && ${#LSFG_CANDIDATES[@]} -gt 0 ]]; then
+        LSFG_PATH="${LSFG_CANDIDATES[0]}"
+    fi
+    case "$LSFG_PATH" in
+        http*://*) LSFG_URL="$LSFG_PATH" ;;
+        //*)       LSFG_URL="https:$LSFG_PATH" ;;
+        /*)        LSFG_URL="$LSFG_BASE$LSFG_PATH" ;;
+        ?*)        LSFG_URL="$LSFG_BASE/${LSFG_PATH#./}" ;;
+    esac
 fi
-if [[ -n "$LSFG_URL" ]] && curl -fsSL -A "$LSFG_UA" -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL" 2>/dev/null && tar -tf "$LSFG_TMP/lsfg-vk.tar.xz" &>/dev/null; then
+
+if [[ -n "$LSFG_URL" ]] && curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL" 2>/dev/null && tar -tf "$LSFG_TMP/lsfg-vk.tar.xz" &>/dev/null; then
     mkdir -p "$HOME/.local"
-    tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local"
-    echo "lsfg-vk zainstalowano z $LSFG_URL"
-else
-    echo "lsfg-vk: nie udalo sie pobrac paczki z builds.lsfg-vk.dev, pomijam" >&2
+    if tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local"; then
+        LSFG_INSTALLED=1
+        echo "lsfg-vk zainstalowano z $LSFG_URL"
+    fi
 fi
-rm -rf "$LSFG_TMP"
+
+if [[ "$LSFG_INSTALLED" -eq 0 ]]; then
+    log_warn "lsfg-vk: brak gotowej paczki, buduję ze źródeł..." "lsfg-vk: no prebuilt package, building from source..."
+    if git clone --depth=1 https://git.lsfg-vk.dev/lsfg-vk.git "$LSFG_SRC_DIR/lsfg-vk"; then
+        (
+            cd "$LSFG_SRC_DIR/lsfg-vk" &&
+            cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+                -DCMAKE_INSTALL_PREFIX=/usr/local \
+                -DCMAKE_CXX_COMPILER=clang++ \
+                -DLSFGVK_BUILD_UI=ON &&
+            cmake --build build &&
+            sudo cmake --install build
+        ) || log_warn "Nie udało się zbudować lsfg-vk ze źródeł." "Failed to build lsfg-vk from source."
+    else
+        log_warn "Nie udało się sklonować repozytorium lsfg-vk." "Failed to clone the lsfg-vk repository."
+    fi
+fi
+rm -rf "$LSFG_TMP" "$LSFG_SRC_DIR"
 
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
 
