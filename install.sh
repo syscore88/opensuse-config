@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================================
-# KOMPLEKSOWY SKRYPT KONFIGURACYJNY SYSTEMU (OPENSUSE TUMBLEWEED)
+# KOMPLEKSOWY SKRYPT KONFIGURACYJNY SYSTEMU OPENSUSE TUMBLEWEED
 # ==========================================================
 
 set -Eeuo pipefail
@@ -195,8 +195,6 @@ if [[ "$SCRIPT_LANG" == "pl" ]]; then
 else
     printf 'sudo password required:\n' >&3
 fi
-sudo -v
-
 ( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
 SUDO_KEEPALIVE_PID=$!
 
@@ -212,7 +210,14 @@ fi
 if [[ "$USE_RUN0" -eq 1 ]] || [[ ! -f "$SUDOERS_NOPASSWD_FILE" ]]; then
     printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo tee "$RUN0_NOPASSWD_FILE" > /dev/null
     sudo systemctl try-restart polkit 2>/dev/null || true
+    sudo -n true 2>/dev/null || sudo systemctl try-restart polkit 2>/dev/null || true
     USE_RUN0=1
+elif ! sudo -n true 2>/dev/null; then
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        echo -e "${WARN}⚠ Reguła NOPASSWD zainstalowana, ale sudo nadal prosi o hasło - sprawdź 'sudo -l' (możliwa inna reguła w /etc/sudoers nadpisująca wpis z sudoers.d).${NC}" >&3
+    else
+        echo -e "${WARN}⚠ NOPASSWD rule installed, but sudo still asks for a password - check 'sudo -l' (a rule in /etc/sudoers may be overriding the sudoers.d entry).${NC}" >&3
+    fi
 fi
 
 printf '\033[?7l' >&3
