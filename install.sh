@@ -201,12 +201,7 @@ if [[ "$SCRIPT_LANG" == "pl" ]]; then
 else
     printf 'sudo password required:\n' >&3
 fi
-if [[ "$USE_RUN0" -eq 1 ]]; then
-    if ! sudo true; then
-        log_err "Nie udało się uzyskać uprawnień (run0)." "Failed to obtain privileges (run0)."
-        exit 1
-    fi
-else
+if [[ "$USE_RUN0" -ne 1 ]]; then
     if ! sudo -v; then
         log_err "Nie udało się uzyskać uprawnień sudo." "Failed to obtain sudo privileges."
         exit 1
@@ -221,10 +216,10 @@ else
         done
     ) &
     SUDO_KEEPALIVE_PID=$!
+    SUDO_READY=1
 fi
-SUDO_READY=1
 
-if command -v visudo >/dev/null 2>&1; then
+if [[ "$USE_RUN0" -ne 1 ]] && command -v visudo >/dev/null 2>&1; then
     SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" &>/dev/null; then
@@ -235,6 +230,7 @@ fi
 
 if [[ "$USE_RUN0" -eq 1 ]] || [[ ! -f "$SUDOERS_NOPASSWD_FILE" ]]; then
     printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo tee "$RUN0_NOPASSWD_FILE" > /dev/null
+    SUDO_READY=1
     sudo systemctl try-restart polkit 2>/dev/null || true
     sudo -n true 2>/dev/null || sudo systemctl try-restart polkit 2>/dev/null || true
     USE_RUN0=1
