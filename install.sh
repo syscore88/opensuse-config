@@ -396,7 +396,7 @@ PACKAGES=(
     telegram-desktop qbittorrent zsh qt6-declarative-devel qt6-base-devel
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
-    cmake meson patterns-devel-base-devel_basis kernel-devel
+    cmake meson patterns-devel-base-devel_basis kernel-devel ghostwriter
     gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
     gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel
    )
