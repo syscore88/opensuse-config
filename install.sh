@@ -279,11 +279,26 @@ wait_for_zypper_lock() {
         sleep 5
     done
 }
+
+install_missing() {
+    local -a opts=() missing=()
+    local arg
+    for arg in "$@"; do
+        if [[ "$arg" == -* ]]; then
+            opts+=("$arg")
+        elif ! rpm -q "$arg" &>/dev/null; then
+            missing+=("$arg")
+        fi
+    done
+    if (( ${#missing[@]} > 0 )); then
+        sudo zypper install "${opts[@]}" "${missing[@]}"
+    fi
+}
 disable_packagekit
 
 wait_for_zypper_lock
 for pkg in curl wget pciutils gpg2 dconf; do
-    sudo zypper install -y "$pkg" || true
+    install_missing -y "$pkg" || true
 done
 
 show_progress 2 $TOTAL_STEPS "$MSG_PHASE_1"
@@ -387,8 +402,8 @@ fi
 show_progress 4 $TOTAL_STEPS "$MSG_PHASE_2"
 
 wait_for_zypper_lock
-sudo zypper install -y google-chrome-stable || true
-sudo zypper install -y brave-origin || true
+install_missing -y google-chrome-stable || true
+install_missing -y brave-origin || true
 
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract
@@ -504,8 +519,10 @@ install_discord_rpm() {
 }
 
 wait_for_zypper_lock
-if sudo zypper repos 2>/dev/null | grep -iq "packman"; then
-    sudo zypper install -y discord 2>/dev/null || install_discord_rpm
+if rpm -q discord &>/dev/null; then
+    :
+elif sudo zypper repos 2>/dev/null | grep -iq "packman"; then
+    install_missing -y discord 2>/dev/null || install_discord_rpm
 else
     install_discord_rpm
 fi
@@ -604,7 +621,7 @@ VIRT_PACKAGES=(virt-manager "$QEMU_PKG" qemu-tools libvirt libvirt-daemon-qemu)
 [[ -n "$OVMF_PKG" ]] && VIRT_PACKAGES+=("$OVMF_PKG")
 
 wait_for_zypper_lock
-sudo zypper install -y --allow-vendor-change "${VIRT_PACKAGES[@]}" 2>/dev/null || true
+install_missing -y --allow-vendor-change "${VIRT_PACKAGES[@]}" 2>/dev/null || true
 
 if command -v dconf &>/dev/null; then
     dconf load /org/virt-manager/virt-manager/ <<'DCONFEOF'
@@ -677,13 +694,13 @@ done
 show_progress 8 $TOTAL_STEPS "$MSG_PHASE_2"
 
 wait_for_zypper_lock
-sudo zypper install -y flatpak 2>/dev/null || true
+install_missing -y flatpak 2>/dev/null || true
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 flatpak update --appstream 2>/dev/null || true
 
-flatpak install --user -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
-flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
-rpm -q faugus-launcher &>/dev/null || flatpak install --user -y flathub io.github.Faugus.faugus-launcher 2>/dev/null || true
+flatpak info com.github.tchx84.Flatseal &>/dev/null || flatpak install --user -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
+flatpak info it.mijorus.gearlever &>/dev/null || flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
+rpm -q faugus-launcher &>/dev/null || flatpak info io.github.Faugus.faugus-launcher &>/dev/null || flatpak install --user -y flathub io.github.Faugus.faugus-launcher 2>/dev/null || true
 
 # ==========================================================
 #  ETAP 3/4: OPTYMALIZACJA
