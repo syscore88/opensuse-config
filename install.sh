@@ -543,8 +543,8 @@ LSFG_INSTALLED=0
 if LSFG_HTML="$(curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" "$LSFG_BASE/" 2>/dev/null)"; then
     mapfile -t LSFG_CANDIDATES < <(printf '%s' "$LSFG_HTML" | grep -oiE '[A-Za-z0-9._~:/%+@-]+\.tar\.xz' | awk '!seen[$0]++' || true)
     LSFG_PATH=""
-    for c in "${LSFG_CANDIDATES[@]}"; do
-        if [[ "${c,,}" == *linux* ]]; then
+    for c in $(printf '%s\n' "${LSFG_CANDIDATES[@]}" | sort -rV); do
+        if [[ "$c" =~ (^|/)lsfg-vk-[0-9]+(\.[0-9]+)*\.tar\.xz$ ]]; then
             LSFG_PATH="$c"
             break
         fi
