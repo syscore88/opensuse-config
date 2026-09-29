@@ -398,7 +398,7 @@ PACKAGES=(
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
     cmake meson patterns-devel-base-devel_basis kernel-devel ghostwriter
     gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
-    gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel
+    gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel faugus-launcher
    )
 
 wait_for_zypper_lock
@@ -510,19 +510,6 @@ fi
 
 OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
 [[ -n "$OPENCODE_URL" ]] && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
-
-FAUGUS_URL=$(curl -sf https://api.github.com/repos/Faugus/faugus-launcher/releases/latest \
-    | grep "browser_download_url.*x86_64.rpm" | cut -d '"' -f 4 || true)
-
-if [[ -n "$FAUGUS_URL" ]]; then
-    FAUGUS_RPM="$RPM_DIR/faugus-launcher.rpm"
-    download_rpm "faugus" "$FAUGUS_URL" "$FAUGUS_RPM"
-    if [[ -f "$FAUGUS_RPM" ]]; then
-        wait_for_zypper_lock
-        sudo rpm -Uvh --nodeps --force "$FAUGUS_RPM" 2>/dev/null || true
-        rm -f "$FAUGUS_RPM"
-    fi
-fi
 
 shopt -s nullglob
 RPM_FILES=("$RPM_DIR"/*.rpm)
@@ -694,6 +681,7 @@ flatpak update --appstream 2>/dev/null || true
 
 flatpak install --user -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
 flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
+rpm -q faugus-launcher &>/dev/null || flatpak install --user -y flathub io.github.Faugus.faugus-launcher 2>/dev/null || true
 
 # ==========================================================
 #  ETAP 3/4: OPTYMALIZACJA
