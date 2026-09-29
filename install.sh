@@ -193,11 +193,6 @@ if sudo --version 2>/dev/null | grep -qi "run0"; then
     USE_RUN0=1
 fi
 
-if [[ "$SCRIPT_LANG" == "pl" ]]; then
-    printf 'Wymagane hasło sudo:\n' >&3
-else
-    printf 'sudo password required:\n' >&3
-fi
 if [[ "$USE_RUN0" -ne 1 ]]; then
     if ! sudo -v; then
         log_err "Nie udało się uzyskać uprawnień sudo." "Failed to obtain sudo privileges."
