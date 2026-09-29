@@ -405,6 +405,7 @@ wait_for_zypper_lock
 sudo zypper --gpg-auto-import-keys refresh --force || true
 
 for pkg in "${PACKAGES[@]}"; do
+    rpm -q "$pkg" &>/dev/null && continue
     wait_for_zypper_lock
     if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
         continue
@@ -475,6 +476,7 @@ else
 fi
 
 for pkg in "${PACKAGES_32[@]}"; do
+    rpm -q "$pkg" &>/dev/null && continue
     wait_for_zypper_lock
     sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
 done
@@ -509,7 +511,7 @@ else
 fi
 
 OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
-[[ -n "$OPENCODE_URL" ]] && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
+[[ -n "$OPENCODE_URL" ]] && ! rpm -q opencode-desktop &>/dev/null && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
 
 shopt -s nullglob
 RPM_FILES=("$RPM_DIR"/*.rpm)
