@@ -336,13 +336,13 @@ show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
 
 TO_REMOVE=(
     opensuse-welcome-launcher plasma-welcome dragonplayer elisa
-    nano konqueror plasma-browser-integration plasma-vault
+    nano konqueror plasma-browser-integration plasma-vault transmission-gtk
     plasma-thunderbolt kontact kmail kontrast krdp krfb cosmic-player
-    kaddressbook kdepim-runtime akonadi-server akregator
+    kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
     epiphany decibels korganizer kwalletmanager rhythmbox showtime
     gnome-calendar gnome-clocks gnome-user-docs gnome-contacts
     gnome-maps gnome-weather yelp evolution evolution-common
-    evolution-plugins evolution-ews parole gnome-music
+    evolution-plugins evolution-ews parole gnome-music pragha
 )
 wait_for_zypper_lock
 for pkg in "${TO_REMOVE[@]}"; do
