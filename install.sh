@@ -564,7 +564,6 @@ if [[ -n "$LSFG_URL" ]] && curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e
     mkdir -p "$HOME/.local"
     if tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local"; then
         LSFG_INSTALLED=1
-        echo "lsfg-vk zainstalowano z $LSFG_URL"
     fi
 fi
 
