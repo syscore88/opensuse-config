@@ -535,7 +535,6 @@ shopt -u nullglob
 rm -rf "$RPM_DIR"
 
 LSFG_TMP="$(mktemp -d)"
-LSFG_SRC_DIR="$(mktemp -d)"
 LSFG_UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 LSFG_BASE="https://builds.lsfg-vk.dev"
 LSFG_URL=""
@@ -568,24 +567,9 @@ if [[ -n "$LSFG_URL" ]] && curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e
 fi
 
 if [[ "$LSFG_INSTALLED" -eq 0 ]]; then
-    log_warn "lsfg-vk: brak gotowej paczki, buduję ze źródeł..." "lsfg-vk: no prebuilt package, building from source..."
-    if git clone --depth=1 https://git.lsfg-vk.dev/lsfg-vk.git "$LSFG_SRC_DIR/lsfg-vk"; then
-        (
-            cd "$LSFG_SRC_DIR/lsfg-vk" &&
-            cmake -B build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-                -DCMAKE_INSTALL_PREFIX=/usr/local \
-                -DCMAKE_CXX_COMPILER=clang++ \
-                -DLSFGVK_BUILD_UI=ON &&
-            cmake --build build &&
-            sudo cmake --install build
-        ) || log_warn "Nie udało się zbudować lsfg-vk ze źródeł." "Failed to build lsfg-vk from source."
-    else
-        log_warn "Nie udało się sklonować repozytorium lsfg-vk." "Failed to clone the lsfg-vk repository."
-    fi
+    log_warn "lsfg-vk: brak gotowej paczki, pomijam" "lsfg-vk: no prebuilt package, skipping"
 fi
-rm -rf "$LSFG_TMP" "$LSFG_SRC_DIR"
+rm -rf "$LSFG_TMP"
 
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
 
