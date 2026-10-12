@@ -347,7 +347,7 @@ show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
 TO_REMOVE=(
     opensuse-welcome-launcher plasma6-welcome dragonplayer elisa
     nano konqueror plasma6-browser-integration plasma6-vault transmission-gtk
-    plasma6-thunderbolt kontact kmail kontrast krdp6 krfb cosmic-player
+    plasma6-thunderbolt kontact kmail kontrast krdp6 cosmic-player
     kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
     epiphany decibels korganizer kwalletmanager rhythmbox showtime
     gnome-calendar gnome-clocks gnome-user-docs gnome-contacts exaile mpv
