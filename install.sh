@@ -1,7 +1,7 @@
 #!/bin/bash
-# ==========================================================
+# =============================================================
 # KOMPLEKSOWY SKRYPT KONFIGURACYJNY SYSTEMU OPENSUSE TUMBLEWEED
-# ==========================================================
+# =============================================================
 
 set -Eeuo pipefail
 export ZYPPER_NONINTERACTIVE=1
@@ -346,14 +346,13 @@ show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
 
 TO_REMOVE=(
     opensuse-welcome-launcher plasma6-welcome dragonplayer elisa
-    nano konqueror plasma6-browser-integration plasma6-vault transmission-gtk
+    konqueror plasma6-browser-integration plasma6-vault transmission-gtk
     plasma6-thunderbolt kontact kmail kontrast krdp6 cosmic-player
     kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
     epiphany decibels korganizer kwalletmanager rhythmbox showtime
     gnome-calendar gnome-clocks gnome-user-docs gnome-contacts exaile mpv
-    gnome-maps gnome-weather yelp evolution evolution-ews totem
-    parole gnome-music pragha juk
-)
+    gnome-maps gnome-weather yelp totem parole gnome-music pragha juk
+    )
 wait_for_zypper_lock
 for pkg in "${TO_REMOVE[@]}"; do
     if rpm -q "$pkg" &>/dev/null; then
