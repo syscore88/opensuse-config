@@ -402,7 +402,7 @@ install_missing -y brave-origin || true
 
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract
-    audacity gimp gmic mixxx kdenlive kolourpaint soundconverter handbrake-gtk
+    audacity gimp gmic gimp-plugin-gmic mixxx kdenlive kolourpaint soundconverter handbrake-gtk
     telegram-desktop qbittorrent zsh qt6-declarative-devel qt6-base-devel
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs gnome-disk-utility
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
@@ -701,6 +701,17 @@ if sudo test -f "$LOADER_CONF"; then
     if command -v bootctl >/dev/null 2>&1; then
         sudo bootctl set-timeout 0 || true
     fi
+fi
+
+if [[ -f /etc/kernel/cmdline ]] && ! grep -qw 'mitigations=off' /etc/kernel/cmdline; then
+    sudo sed -i '1s/$/ mitigations=off/' /etc/kernel/cmdline || true
+    if command -v sdbootutil >/dev/null 2>&1; then
+        sudo sdbootutil update-all-entries || true
+    fi
+fi
+if [[ -f /etc/default/grub ]] && command -v grub2-mkconfig >/dev/null 2>&1; then
+    grep -q 'mitigations=off' /etc/default/grub || sudo sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 mitigations=off"/' /etc/default/grub || true
+    sudo grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
 fi
 
 show_progress 11 $TOTAL_STEPS "$MSG_PHASE_3"
