@@ -216,6 +216,8 @@ if [[ "$USE_RUN0" -ne 1 ]] && command -v visudo >/dev/null 2>&1; then
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" &>/dev/null; then
         sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_NOPASSWD_FILE" 2>/dev/null || true
+        echo "%wheel ALL=(ALL) NOPASSWD: ALL" > "$SUDOERS_TMP"
+        sudo visudo -cf "$SUDOERS_TMP" &>/dev/null && sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99_nopasswd || true
     fi
     rm -f "$SUDOERS_TMP"
 fi
