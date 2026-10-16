@@ -52,7 +52,7 @@ cleanup_on_exit() {
     if [[ -n "${SUDO_READY:-}" ]]; then
         local do_reboot=0
         [[ "$exit_code" -eq 0 && "${DO_REBOOT:-0}" -eq 1 ]] && do_reboot=1
-        sudo sh -c 'rm -f "$1" "$2"; systemctl try-restart polkit 2>/dev/null; [ "$3" = 1 ] && systemctl reboot' _ "${RUN0_NOPASSWD_FILE:-}" "${SUDOERS_NOPASSWD_FILE:-}" "$do_reboot" || true
+        sudo sh -c 'rm -f "$1" "$2"; systemctl try-restart polkit 2>/dev/null; if [ "$3" = 1 ]; then systemctl reboot; fi' _ "${RUN0_NOPASSWD_FILE:-}" "${SUDOERS_NOPASSWD_FILE:-}" "$do_reboot" || true
     fi
 }
 trap cleanup_on_exit EXIT
