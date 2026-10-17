@@ -404,7 +404,7 @@ install_missing -y brave-origin || true
 
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract krita
-    audacity gimp gmic gimp-plugin-gmic mixxx kdenlive kolourpaint soundconverter handbrake-gtk
+    audacity gimp gmic gimp-plugin-gmic mixxx kdenlive soundconverter handbrake-gtk
     telegram-desktop qbittorrent zsh qt6-declarative-devel qt6-base-devel
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs gnome-disk-utility
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko
