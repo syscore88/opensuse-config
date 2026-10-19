@@ -711,8 +711,15 @@ if [[ -f /etc/kernel/cmdline ]] && ! grep -qw 'mitigations=off' /etc/kernel/cmdl
         sudo sdbootutil update-all-entries || true
     fi
 fi
+if [[ -f /etc/kernel/cmdline ]] && ! grep -qw 'split_lock_detect=off' /etc/kernel/cmdline; then
+    sudo sed -i '1s/$/ split_lock_detect=off/' /etc/kernel/cmdline || true
+    if command -v sdbootutil >/dev/null 2>&1; then
+        sudo sdbootutil update-all-entries || true
+    fi
+fi
 if [[ -f /etc/default/grub ]] && command -v grub2-mkconfig >/dev/null 2>&1; then
     grep -q 'mitigations=off' /etc/default/grub || sudo sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 mitigations=off"/' /etc/default/grub || true
+    grep -q 'split_lock_detect=off' /etc/default/grub || sudo sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 split_lock_detect=off"/' /etc/default/grub || true
     sudo grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
 fi
 
