@@ -354,7 +354,7 @@ TO_REMOVE=(
     kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
     epiphany decibels korganizer kwalletmanager rhythmbox showtime
     gnome-calendar gnome-clocks gnome-user-docs gnome-contacts exaile mpv
-    evolution evolution-ews evolution-data-server
+    evolution evolution-ews evolution-data-server "evolution*"
     gnome-maps gnome-weather yelp totem parole gnome-music pragha juk
     )
 wait_for_zypper_lock
