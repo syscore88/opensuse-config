@@ -410,7 +410,8 @@ PACKAGES=(
     bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs gnome-disk-utility
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko winetricks
     cmake meson patterns-devel-base-devel_basis kernel-devel ghostwriter
-    gstreamer-plugins-ugly qmmp ninja pkgconf-pkg-config vulkan-devel
+    gstreamer-plugins-ugly ffmpeg x264 libavcodec-full gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav
+    qmmp ninja pkgconf-pkg-config vulkan-devel
     gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel faugus-launcher
    )
 
