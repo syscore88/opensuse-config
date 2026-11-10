@@ -406,19 +406,31 @@ install_missing -y brave-origin || true
 PACKAGES=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract krita
     audacity gimp gmic gimp-plugin-gmic mixxx kdenlive soundconverter handbrake-gtk
-    telegram-desktop qbittorrent zsh qt6-declarative-devel qt6-base-devel
-    bleachbit makeself vim cdemu-daemon cdemu-client vlc vlc-codecs gnome-disk-utility
+    telegram-desktop qbittorrent zsh faugus-launcher gnome-disk-utility
+    bleachbit makeself vim cdemu-daemon cdemu-client vlc
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko winetricks
     cmake meson patterns-devel-base-devel_basis kernel-devel ghostwriter
-    gstreamer-plugins-ugly ffmpeg x264 libavcodec-full gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav
-    qmmp ninja pkgconf-pkg-config vulkan-devel
-    gcc-c++ clang llvm Mesa-libGL-devel qt6-tools-devel faugus-launcher
+    qmmp ninja pkgconf-pkg-config gcc-c++ clang llvm
    )
+
+PACKAGES_CODECS=(
+    vlc-codecs gstreamer-plugins-ugly ffmpeg x264 libavcodec-full
+    gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav
+)
 
 wait_for_zypper_lock
 sudo zypper --gpg-auto-import-keys refresh --force || true
 
 for pkg in "${PACKAGES[@]}"; do
+    rpm -q "$pkg" &>/dev/null && continue
+    wait_for_zypper_lock
+    if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
+        continue
+    fi
+    sudo zypper install -y --allow-vendor-change --from packman "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
+done
+
+for pkg in "${PACKAGES_CODECS[@]}"; do
     rpm -q "$pkg" &>/dev/null && continue
     wait_for_zypper_lock
     if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
@@ -450,6 +462,7 @@ PACKAGES_32=(
     libgtk-2_0-0-32bit libgtk-3-0-32bit
 )
 
+GPU_PKGS=()
 GPU_VENDOR=$(lspci -nn | grep -iE "VGA|3D|Display" || true)
 DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
 
@@ -468,34 +481,44 @@ if (( GPU_VENDOR_COUNT >= 2 )); then
 fi
 
 if (( GPU_HAS_NVIDIA )); then
-    PACKAGES_32+=(libglvnd-32bit)
-    PACKAGES_32+=(libva-nvidia-driver)
-    PACKAGES_32+=(nvidia-compute-G06 nvidia-compute-G06-32bit)
+    GPU_PKGS+=(libglvnd-32bit)
+    GPU_PKGS+=(libva-nvidia-driver)
+    GPU_PKGS+=(nvidia-compute-G06 nvidia-compute-G06-32bit)
+    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
     FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
 fi
 if (( GPU_HAS_AMD )); then
-    PACKAGES_32+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit)
-    PACKAGES_32+=(Mesa-libva Mesa-libva-32bit)
-    PACKAGES_32+=(Mesa-libOpenCL)
+    GPU_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit)
+    GPU_PKGS+=(Mesa-libva Mesa-libva-32bit)
+    GPU_PKGS+=(Mesa-libOpenCL)
+    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
     FORCE_DRIVERS+=" amdgpu"
 fi
 if (( GPU_HAS_INTEL )); then
-    PACKAGES_32+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit)
-    PACKAGES_32+=(intel-media-driver)
-    PACKAGES_32+=(intel-opencl)
+    GPU_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit)
+    GPU_PKGS+=(intel-media-driver)
+    GPU_PKGS+=(intel-opencl)
+    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
     FORCE_DRIVERS+=" i915"
 fi
 
 if (( GPU_VENDOR_COUNT > 0 )); then
-    readarray -t PACKAGES_32 < <(printf '%s\n' "${PACKAGES_32[@]}" | awk '!seen[$0]++')
+    readarray -t GPU_PKGS < <(printf '%s\n' "${GPU_PKGS[@]}" | awk '!seen[$0]++')
     echo "force_drivers+=\"${FORCE_DRIVERS} \"" | sudo tee "$DRACUT_CONF" > /dev/null
 else
-    PACKAGES_32+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan1 libvulkan1-32bit)
-    PACKAGES_32+=(Mesa-libOpenCL)
+    GPU_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan1 libvulkan1-32bit)
+    GPU_PKGS+=(Mesa-libOpenCL)
+    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
     sudo rm -f "$DRACUT_CONF"
 fi
 
 for pkg in "${PACKAGES_32[@]}"; do
+    rpm -q "$pkg" &>/dev/null && continue
+    wait_for_zypper_lock
+    sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
+done
+
+for pkg in "${GPU_PKGS[@]}"; do
     rpm -q "$pkg" &>/dev/null && continue
     wait_for_zypper_lock
     sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
