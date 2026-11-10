@@ -452,7 +452,6 @@ PACKAGES_32=(
 
 GPU_VENDOR=$(lspci -nn | grep -iE "VGA|3D|Display" || true)
 DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
-MESA_32_PKGS=(Mesa-libGL1-32bit Mesa-dri-32bit libvulkan1-32bit)
 
 GPU_HAS_NVIDIA=0
 GPU_HAS_AMD=0
@@ -470,14 +469,17 @@ fi
 
 if (( GPU_HAS_NVIDIA )); then
     PACKAGES_32+=(libglvnd-32bit)
+    PACKAGES_32+=(libva-nvidia-driver)
     FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
 fi
 if (( GPU_HAS_AMD )); then
-    PACKAGES_32+=(libvulkan_radeon-32bit)
+    PACKAGES_32+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit)
+    PACKAGES_32+=(Mesa-libva Mesa-libva-32bit)
     FORCE_DRIVERS+=" amdgpu"
 fi
 if (( GPU_HAS_INTEL )); then
-    PACKAGES_32+=(libvulkan_intel-32bit)
+    PACKAGES_32+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit)
+    PACKAGES_32+=(intel-media-driver)
     FORCE_DRIVERS+=" i915"
 fi
 
@@ -485,7 +487,7 @@ if (( GPU_VENDOR_COUNT > 0 )); then
     readarray -t PACKAGES_32 < <(printf '%s\n' "${PACKAGES_32[@]}" | awk '!seen[$0]++')
     echo "force_drivers+=\"${FORCE_DRIVERS} \"" | sudo tee "$DRACUT_CONF" > /dev/null
 else
-    PACKAGES_32+=("${MESA_32_PKGS[@]}")
+    PACKAGES_32+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan1 libvulkan1-32bit)
     sudo rm -f "$DRACUT_CONF"
 fi
 
