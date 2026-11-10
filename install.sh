@@ -292,12 +292,64 @@ install_missing() {
         sudo zypper install "${opts[@]}" "${missing[@]}"
     fi
 }
+
+pkg_installed() {
+    rpm -q "$1" &>/dev/null
+}
+
+install_zypper_pkgs() {
+    local pkg
+    for pkg in "$@"; do
+        pkg_installed "$pkg" && continue
+        wait_for_zypper_lock
+        if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
+            continue
+        fi
+        sudo zypper install -y --allow-vendor-change --from packman "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
+    done
+}
+
 disable_packagekit
 
 wait_for_zypper_lock
 for pkg in curl wget pciutils gpg2 dconf; do
     install_missing -y "$pkg" || true
 done
+
+GPU_TYPE="unknown"
+HYBRID_GPU=false
+GPU_VENDORS=()
+GPU_UNKNOWN_PKGS=(
+    Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan1 libvulkan1-32bit
+    Mesa-libOpenCL vulkan-devel Mesa-libGL-devel
+)
+if command -v lspci &>/dev/null; then
+    GPU_INFO=$(lspci | grep -i -E "vga|3d|display" || true)
+
+    echo "$GPU_INFO" | grep -qi "nvidia"      && GPU_VENDORS+=("nvidia")
+    echo "$GPU_INFO" | grep -qi -E "\b(amd|ati)\b|advanced micro devices|radeon" && GPU_VENDORS+=("amd")
+    echo "$GPU_INFO" | grep -qi "intel"       && GPU_VENDORS+=("intel")
+
+    TOTAL_KNOWN=${#GPU_VENDORS[@]}
+
+    if [ -z "$GPU_INFO" ] || [ "$TOTAL_KNOWN" -eq 0 ]; then
+        HYBRID_GPU=false
+        for pkg in "${GPU_UNKNOWN_PKGS[@]}"; do
+            pkg_installed "$pkg" || install_missing -y --allow-vendor-change "$pkg" || true
+        done
+    elif [ "$TOTAL_KNOWN" -ge 2 ]; then
+        HYBRID_GPU=true
+        GPU_TYPE="$(IFS=+; echo "${GPU_VENDORS[*]}")"
+        log_info "Wykryto hybrydowy układ graficzny (HYBRID_GPU=$HYBRID_GPU): $GPU_TYPE" "Detected a hybrid GPU setup (HYBRID_GPU=$HYBRID_GPU): $GPU_TYPE"
+    else
+        HYBRID_GPU=false
+        GPU_TYPE="${GPU_VENDORS[0]}"
+    fi
+else
+    for pkg in "${GPU_UNKNOWN_PKGS[@]}"; do
+        pkg_installed "$pkg" || install_missing -y --allow-vendor-change "$pkg" || true
+    done
+fi
 
 show_progress 2 $TOTAL_STEPS "$MSG_PHASE_1"
 
@@ -403,41 +455,71 @@ wait_for_zypper_lock
 install_missing -y google-chrome-stable || true
 install_missing -y brave-origin || true
 
-PACKAGES=(
+wait_for_zypper_lock
+sudo zypper --gpg-auto-import-keys refresh --force || true
+
+show_progress 5 $TOTAL_STEPS "$MSG_PHASE_2"
+
+SYSTEM_PKGS=(
     dconf-editor fastfetch unrar git mc android-tools pv zenity innoextract krita
     audacity gimp gmic gimp-plugin-gmic mixxx kdenlive soundconverter handbrake-gtk
     telegram-desktop qbittorrent zsh faugus-launcher gnome-disk-utility
     bleachbit makeself vim cdemu-daemon cdemu-client vlc
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko winetricks
     cmake meson patterns-devel-base-devel_basis kernel-devel ghostwriter
-    qmmp ninja pkgconf-pkg-config gcc-c++ clang llvm
-   )
+    qmmp ninja pkgconf-pkg-config clang llvm pipewire-alsa
+)
 
-PACKAGES_CODECS=(
+PKGS_32BIT=(
+    mangohud-32bit libgamemode0-32bit libgamemodeauto0-32bit libvkd3d1-32bit wine-staging-32bit
+    libopenal1-32bit libXdamage1-32bit libXtst6-32bit
+    libgtk-2_0-0-32bit libgtk-3-0-32bit
+    libpulse0-32bit libpipewire-0_3-0-32bit alsa-plugins-32bit pipewire-alsa-32bit
+    libXrandr2-32bit libXrender1-32bit
+)
+
+PKGS_CODECS=(
     vlc-codecs gstreamer-plugins-ugly ffmpeg x264 libavcodec-full
     gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav
 )
 
-wait_for_zypper_lock
-sudo zypper --gpg-auto-import-keys refresh --force || true
-
-for pkg in "${PACKAGES[@]}"; do
-    rpm -q "$pkg" &>/dev/null && continue
-    wait_for_zypper_lock
-    if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
-        continue
-    fi
-    sudo zypper install -y --allow-vendor-change --from packman "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
+for vendor in "${GPU_VENDORS[@]}"; do
+    case "$vendor" in
+        "nvidia") SYSTEM_PKGS+=(libglvnd-32bit libva-nvidia-driver nvidia-compute-G06 nvidia-compute-G06-32bit) ;;
+        "amd")    SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit Mesa-libva Mesa-libva-32bit Mesa-libOpenCL vulkan-devel Mesa-libGL-devel) ;;
+        "intel")  SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit intel-media-driver intel-opencl vulkan-devel Mesa-libGL-devel) ;;
+    esac
 done
 
-for pkg in "${PACKAGES_CODECS[@]}"; do
-    rpm -q "$pkg" &>/dev/null && continue
-    wait_for_zypper_lock
-    if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
-        continue
-    fi
-    sudo zypper install -y --allow-vendor-change --from packman "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
-done
+if [ "${#GPU_VENDORS[@]}" -gt 0 ]; then
+    readarray -t SYSTEM_PKGS < <(printf '%s\n' "${SYSTEM_PKGS[@]}" | awk '!seen[$0]++')
+fi
+
+install_zypper_pkgs "${SYSTEM_PKGS[@]}"
+install_zypper_pkgs "${PKGS_32BIT[@]}"
+install_zypper_pkgs "${PKGS_CODECS[@]}"
+
+DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
+FORCE_DRIVERS=""
+if [[ $GPU_TYPE == *"nvidia"* ]]; then
+    FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
+fi
+if [[ $GPU_TYPE == *"amd"* ]]; then
+    FORCE_DRIVERS+=" amdgpu"
+fi
+if [[ $GPU_TYPE == *"intel"* ]]; then
+    FORCE_DRIVERS+=" i915"
+fi
+
+if [ -n "$FORCE_DRIVERS" ]; then
+    echo "force_drivers+=\"${FORCE_DRIVERS} \"" | sudo tee "$DRACUT_CONF" > /dev/null
+else
+    sudo rm -f "$DRACUT_CONF"
+fi
+
+if [[ -f "$DRACUT_CONF" ]]; then
+    sudo dracut --force || true
+fi
 
 sudo systemctl disable --now cdemu-daemon 2>/dev/null || true
 sudo systemctl mask cdemu-daemon 2>/dev/null || true
@@ -453,80 +535,6 @@ for f in /etc/xdg/autostart/gcdemu.desktop /etc/xdg/autostart/cdemu.desktop /usr
     fi
 done
 pkill -f gcdemu 2>/dev/null || true
-
-show_progress 5 $TOTAL_STEPS "$MSG_PHASE_2"
-
-PACKAGES_32=(
-    mangohud-32bit libgamemodeauto0-32bit libvkd3d1-32bit wine-staging-32bit
-    libopenal1-32bit libXdamage1-32bit libXtst6-32bit
-    libgtk-2_0-0-32bit libgtk-3-0-32bit
-)
-
-GPU_PKGS=()
-GPU_VENDOR=$(lspci -nn | grep -iE "VGA|3D|Display" || true)
-DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
-
-GPU_HAS_NVIDIA=0
-GPU_HAS_AMD=0
-GPU_HAS_INTEL=0
-echo "$GPU_VENDOR" | grep -iq "nvidia" && GPU_HAS_NVIDIA=1
-echo "$GPU_VENDOR" | grep -iqE "amd|radeon" && GPU_HAS_AMD=1
-echo "$GPU_VENDOR" | grep -iq "intel" && GPU_HAS_INTEL=1
-
-GPU_VENDOR_COUNT=$(( GPU_HAS_NVIDIA + GPU_HAS_AMD + GPU_HAS_INTEL ))
-FORCE_DRIVERS=""
-
-if (( GPU_VENDOR_COUNT >= 2 )); then
-    log_info "Wykryto hybrydowy układ graficzny (więcej niż jedno GPU)." "Detected a hybrid GPU setup (more than one GPU)."
-fi
-
-if (( GPU_HAS_NVIDIA )); then
-    GPU_PKGS+=(libglvnd-32bit)
-    GPU_PKGS+=(libva-nvidia-driver)
-    GPU_PKGS+=(nvidia-compute-G06 nvidia-compute-G06-32bit)
-    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
-    FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
-fi
-if (( GPU_HAS_AMD )); then
-    GPU_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit)
-    GPU_PKGS+=(Mesa-libva Mesa-libva-32bit)
-    GPU_PKGS+=(Mesa-libOpenCL)
-    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
-    FORCE_DRIVERS+=" amdgpu"
-fi
-if (( GPU_HAS_INTEL )); then
-    GPU_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit)
-    GPU_PKGS+=(intel-media-driver)
-    GPU_PKGS+=(intel-opencl)
-    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
-    FORCE_DRIVERS+=" i915"
-fi
-
-if (( GPU_VENDOR_COUNT > 0 )); then
-    readarray -t GPU_PKGS < <(printf '%s\n' "${GPU_PKGS[@]}" | awk '!seen[$0]++')
-    echo "force_drivers+=\"${FORCE_DRIVERS} \"" | sudo tee "$DRACUT_CONF" > /dev/null
-else
-    GPU_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan1 libvulkan1-32bit)
-    GPU_PKGS+=(Mesa-libOpenCL)
-    GPU_PKGS+=(vulkan-devel Mesa-libGL-devel)
-    sudo rm -f "$DRACUT_CONF"
-fi
-
-for pkg in "${PACKAGES_32[@]}"; do
-    rpm -q "$pkg" &>/dev/null && continue
-    wait_for_zypper_lock
-    sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
-done
-
-for pkg in "${GPU_PKGS[@]}"; do
-    rpm -q "$pkg" &>/dev/null && continue
-    wait_for_zypper_lock
-    sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
-done
-
-if [[ -f "$DRACUT_CONF" ]]; then
-    sudo dracut --force || true
-fi
 
 show_progress 6 $TOTAL_STEPS "$MSG_PHASE_2"
 
