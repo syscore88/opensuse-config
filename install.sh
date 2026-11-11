@@ -27,14 +27,15 @@ NC='\033[0m'
 
 TMP_LOG="$(mktemp /tmp/opensuse-install-log.XXXXXX)"
 LOG_FILE="$HOME/install_error_$(date +%Y%m%d_%H%M%S).log"
+RPM_DIR="$(mktemp -d /tmp/rpm_install_XXXXXX)"
 
 exec 3>&1
 exec >>"$TMP_LOG" 2>&1
 
 cleanup_on_exit() {
     local exit_code=$?
-    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     declare -F restore_packagekit >/dev/null && restore_packagekit || true
+    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     printf '\033[?7h' >&3
     [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
     if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
@@ -49,10 +50,13 @@ cleanup_on_exit() {
         fi
     fi
     rm -f "$TMP_LOG"
-    if [[ -n "${SUDO_READY:-}" ]]; then
+    if [[ "${SUDO_READY:-0}" = "1" ]]; then
         local do_reboot=0
         [[ "$exit_code" -eq 0 && "${DO_REBOOT:-0}" -eq 1 ]] && do_reboot=1
-        sudo sh -c 'rm -f "$1" "$2"; systemctl try-restart polkit 2>/dev/null; if [ "$3" = 1 ]; then systemctl reboot; fi' _ "${RUN0_NOPASSWD_FILE:-}" "${SUDOERS_NOPASSWD_FILE:-}" "$do_reboot" || true
+        sudo sh -c 'rm -f "$1" "$2"; systemctl try-restart polkit 2>/dev/null; if [ "$3" = 1 ]; then systemctl reboot; fi' _ \
+            "${RUN0_NOPASSWD_FILE:-/etc/polkit-1/rules.d/51-run0-nopasswd.rules}" \
+            "${SUDOERS_NOPASSWD_FILE:-/etc/sudoers.d/99-temp-installer}" \
+            "$do_reboot" || true
     fi
 }
 trap cleanup_on_exit EXIT
@@ -171,29 +175,38 @@ fi
 
 TOTAL_STEPS=12
 FAILED_PACKAGES=()
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-CURRENT_USER=$(whoami)
-RPM_DIR="$(mktemp -d /tmp/rpm_install_XXXXXX)"
 
 if [[ "$EUID" -eq 0 ]]; then
-    echo -e "${ERR}[X] Nie uruchamiaj skryptu jako root. Uruchom jako zwykły użytkownik z uprawnieniami sudo.${NC}" >&3
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        echo -e "${ERR}[X] Nie uruchamiaj skryptu jako root. Uruchom jako zwykły użytkownik z uprawnieniami sudo.${NC}" >&3
+    else
+        echo -e "${ERR}[X] Do not run this script as root. Run as a normal user with sudo.${NC}" >&3
+    fi
     exit 1
 fi
+
+CURRENT_USER=$(whoami)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 printf '\033[?7h\n' >&3
 
 if [[ -z "$CURRENT_USER" ]]; then
-    echo -e "${ERR}[X] Nie udało się ustalić bieżącego użytkownika (whoami zwróciło pusty ciąg).${NC}" >&3
+    if [[ "$SCRIPT_LANG" == "pl" ]]; then
+        echo -e "${ERR}[X] Nie udało się ustalić bieżącego użytkownika (whoami zwróciło pusty ciąg).${NC}" >&3
+    else
+        echo -e "${ERR}[X] Failed to determine current user (whoami returned empty string).${NC}" >&3
+    fi
     exit 1
 fi
 
 RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
 SUDOERS_NOPASSWD_FILE="/etc/sudoers.d/99-temp-installer"
 USE_RUN0=0
-if sudo --version 2>/dev/null | grep -qi "run0"; then
+if ! command -v visudo >/dev/null 2>&1 || sudo --version 2>/dev/null | grep -qi "run0"; then
     USE_RUN0=1
 fi
 
+SUDO_READY=0
 if [[ "$USE_RUN0" -ne 1 ]]; then
     if ! sudo -v; then
         log_err "Nie udało się uzyskać uprawnień sudo." "Failed to obtain sudo privileges."
@@ -210,9 +223,7 @@ if [[ "$USE_RUN0" -ne 1 ]]; then
     ) &
     SUDO_KEEPALIVE_PID=$!
     SUDO_READY=1
-fi
 
-if [[ "$USE_RUN0" -ne 1 ]] && command -v visudo >/dev/null 2>&1; then
     SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" &>/dev/null; then
@@ -244,54 +255,7 @@ printf '\033[?7l' >&3
 # ==========================================================
 show_progress 0 $TOTAL_STEPS "$MSG_PHASE_1"
 
-if [[ -f "$SCRIPT_DIR/.update.sh" ]]; then
-    cp -af "$SCRIPT_DIR/.update.sh" ~/.update.sh
-    chmod +x ~/.update.sh
-fi
-
-if [[ -d "$SCRIPT_DIR/.local" ]]; then
-    mkdir -p ~/.local
-    cp -afT "$SCRIPT_DIR/.local" ~/.local
-fi
-
-if [[ -d "$SCRIPT_DIR/.config" ]]; then
-    mkdir -p ~/.config
-    cp -afT "$SCRIPT_DIR/.config" ~/.config
-fi
-
-show_progress 1 $TOTAL_STEPS "$MSG_PHASE_1"
-
-sudo systemctl stop packagekit.service packagekit-offline-update.service 2>/dev/null || true
-sudo systemctl mask packagekit.service packagekit-offline-update.service 2>/dev/null || true
-sudo killall -9 packagekitd 2>/dev/null || true
-
-wait_for_zypper_lock() {
-    local i=0
-    while pgrep -x zypper >/dev/null || pgrep -x packagekitd >/dev/null; do
-        if (( i++ >= 24 )); then
-            sudo systemctl stop packagekit.service 2>/dev/null || true
-            sudo killall -9 zypper packagekitd 2>/dev/null || true
-            sudo rm -f /var/run/zypp.pid 2>/dev/null || true
-            break
-        fi
-        sleep 5
-    done
-}
-
-install_missing() {
-    local -a opts=() missing=()
-    local arg
-    for arg in "$@"; do
-        if [[ "$arg" == -* ]]; then
-            opts+=("$arg")
-        elif ! rpm -q "$arg" &>/dev/null; then
-            missing+=("$arg")
-        fi
-    done
-    if (( ${#missing[@]} > 0 )); then
-        sudo zypper install "${opts[@]}" "${missing[@]}"
-    fi
-}
+disable_packagekit
 
 pkg_installed() {
     rpm -q "$1" &>/dev/null
@@ -309,12 +273,7 @@ install_zypper_pkgs() {
     done
 }
 
-disable_packagekit
-
-wait_for_zypper_lock
-for pkg in curl wget pciutils gpg2 dconf; do
-    install_missing -y "$pkg" || true
-done
+install_zypper_pkgs curl wget pciutils gpg2 dconf
 
 GPU_TYPE="unknown"
 HYBRID_GPU=false
@@ -334,9 +293,7 @@ if command -v lspci &>/dev/null; then
 
     if [ -z "$GPU_INFO" ] || [ "$TOTAL_KNOWN" -eq 0 ]; then
         HYBRID_GPU=false
-        for pkg in "${GPU_UNKNOWN_PKGS[@]}"; do
-            pkg_installed "$pkg" || install_missing -y --allow-vendor-change "$pkg" || true
-        done
+        install_zypper_pkgs "${GPU_UNKNOWN_PKGS[@]}"
     elif [ "$TOTAL_KNOWN" -ge 2 ]; then
         HYBRID_GPU=true
         GPU_TYPE="$(IFS=+; echo "${GPU_VENDORS[*]}")"
@@ -346,10 +303,73 @@ if command -v lspci &>/dev/null; then
         GPU_TYPE="${GPU_VENDORS[0]}"
     fi
 else
-    for pkg in "${GPU_UNKNOWN_PKGS[@]}"; do
-        pkg_installed "$pkg" || install_missing -y --allow-vendor-change "$pkg" || true
-    done
+    install_zypper_pkgs "${GPU_UNKNOWN_PKGS[@]}"
 fi
+
+if [[ -f "$SCRIPT_DIR/.update.sh" ]]; then
+    cp -af "$SCRIPT_DIR/.update.sh" ~/.update.sh
+    chmod +x ~/.update.sh
+fi
+
+if [[ -d "$SCRIPT_DIR/.local" ]]; then
+    mkdir -p ~/.local
+    cp -afT "$SCRIPT_DIR/.local" ~/.local
+fi
+
+if [[ -d "$SCRIPT_DIR/.config" ]]; then
+    mkdir -p ~/.config
+    cp -afT "$SCRIPT_DIR/.config" ~/.config
+fi
+
+show_progress 1 $TOTAL_STEPS "$MSG_PHASE_1"
+
+TO_REMOVE=(
+    opensuse-welcome-launcher plasma6-welcome dragonplayer elisa
+    konqueror plasma6-browser-integration plasma6-vault transmission-gtk
+    plasma6-thunderbolt kontact kmail kontrast cosmic-player
+    kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
+    epiphany decibels korganizer kwalletmanager rhythmbox showtime
+    gnome-calendar gnome-clocks gnome-user-docs gnome-contacts exaile mpv
+    evolution evolution-ews evolution-data-server
+    evolution-bogofilter evolution-spamassassin pragha juk
+    gnome-maps gnome-weather yelp totem parole gnome-music
+)
+wait_for_zypper_lock
+for pkg in "${TO_REMOVE[@]}"; do
+    if pkg_installed "$pkg"; then
+        sudo zypper remove -y "$pkg" 2>/dev/null || true
+    fi
+done
+wait_for_zypper_lock
+sudo zypper autoremove -y 2>/dev/null || true
+
+if pkg_installed plasma-desktop || pkg_installed plasma-workspace || pkg_installed plasma6-desktop || pkg_installed plasma6-workspace; then
+    mkdir -p ~/.config
+    cat > ~/.config/kwalletrc << 'EOF'
+[Wallet]
+Close When Idle=false
+Close on Screensaver=false
+Default Wallet=kdewallet
+Enabled=false
+First Use=false
+Idle Timeout=10
+Launch Manager=false
+Leave Manager Open=false
+Leave Open=true
+Prompt on Open=false
+Use One Wallet=true
+
+[org.freedesktop.secrets]
+apiEnabled=false
+EOF
+fi
+rm -rf ~/.local/share/akonadi ~/.local/share/kmail2 ~/.local/share/local-mail ~/.local/share/contacts ~/.local/share/korganizer ~/.local/share/akregator ~/.local/share/kontact ~/.local/share/konqueror
+rm -rf ~/.config/akonadi* ~/.config/kmail* ~/.config/kontact* ~/.config/korganizer* ~/.config/kaddressbook* ~/.config/akregator* ~/.config/emailidentities ~/.config/mailtransports
+rm -rf ~/.cache/akonadi* ~/.cache/kmail* ~/.cache/kontact* ~/.cache/korganizer* ~/.cache/kaddressbook* ~/.cache/akregator* ~/.cache/konqueror*
+rm -rf ~/.local/share/{epiphany,decibels,gnome-user-docs,gnome-contacts,gnome-maps,gnome-weather,evolution,gnome-calendar,gnome-clocks,gnome-music,parole,rhythmbox,showtime,dragonplayer,elisa,cosmic-player,transmission,pragha,totem,exaile,mpv,juk}
+rm -rf ~/.config/{epiphany,decibels,gnome-user-docs,gnome-contacts,gnome-maps,gnome-weather,evolution,gnome-calendar,gnome-clocks,gnome-music,parole,rhythmbox,showtime,dragonplayer,elisa,cosmic-player,transmission,pragha,totem,exaile,mpv,juk}
+rm -rf ~/.cache/{epiphany,decibels,gnome-user-docs,gnome-contacts,gnome-maps,gnome-weather,evolution,gnome-calendar,gnome-clocks,gnome-music,parole,rhythmbox,showtime,dragonplayer,elisa,cosmic-player,transmission,pragha,totem,exaile,mpv,juk}
+command -v dconf &>/dev/null && dconf reset -f /org/gnome/evolution/ || true
 
 show_progress 2 $TOTAL_STEPS "$MSG_PHASE_1"
 
@@ -382,11 +402,6 @@ fi
 
 sudo zypper addrepo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo || true
 
-wait_for_zypper_lock
-sudo zypper --gpg-auto-import-keys refresh || true
-wait_for_zypper_lock
-sudo zypper dup -y --allow-vendor-change || true
-
 sudo mkdir -p /etc/NetworkManager/conf.d
 echo -e "[main]\ndns=default\nrc-manager=symlink" | sudo tee /etc/NetworkManager/conf.d/dns.conf > /dev/null
 echo -e "[global-dns]\n\n[global-dns-domain-*]\nservers=1.1.1.2,1.0.0.2,2606:4700:4700::1112,2606:4700:4700::1002" | sudo tee /etc/NetworkManager/conf.d/global-dns.conf > /dev/null
@@ -399,65 +414,15 @@ fi
 
 show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
 
-TO_REMOVE=(
-    opensuse-welcome-launcher plasma6-welcome dragonplayer elisa
-    konqueror plasma6-browser-integration plasma6-vault transmission-gtk
-    plasma6-thunderbolt kontact kmail kontrast cosmic-player
-    kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
-    epiphany decibels korganizer kwalletmanager rhythmbox showtime
-    gnome-calendar gnome-clocks gnome-user-docs gnome-contacts exaile mpv
-    evolution evolution-ews evolution-data-server evolution 
-    evolution-bogofilter evolution-spamassassin pragha juk
-    gnome-maps gnome-weather yelp totem parole gnome-music 
-    )
-wait_for_zypper_lock
-for pkg in "${TO_REMOVE[@]}"; do
-    if rpm -q "$pkg" &>/dev/null; then
-        sudo zypper remove -y "$pkg" 2>/dev/null || true
-    fi
-done
-wait_for_zypper_lock
-sudo zypper autoremove -y 2>/dev/null || true
-
-rm -rf ~/.local/share/akonadi ~/.local/share/kmail2 ~/.local/share/local-mail ~/.local/share/contacts ~/.local/share/korganizer ~/.local/share/akregator ~/.local/share/kontact ~/.local/share/konqueror
-rm -rf ~/.config/akonadi* ~/.config/kmail* ~/.config/kontact* ~/.config/korganizer* ~/.config/kaddressbook* ~/.config/akregator* ~/.config/emailidentities ~/.config/mailtransports
-rm -rf ~/.cache/akonadi* ~/.cache/kmail* ~/.cache/kontact* ~/.cache/korganizer* ~/.cache/kaddressbook* ~/.cache/akregator* ~/.cache/konqueror*
-rm -rf ~/.local/share/{epiphany,decibels,gnome-user-docs,gnome-contacts,gnome-maps,gnome-weather,evolution,gnome-music,parole,rhythmbox,showtime,epiphany,decibels,dragonplayer,elisa,cosmic-player,transmission,pragha,totem,exaile,mpv,juk}
-rm -rf ~/.config/{epiphany,decibels,gnome-user-docs,gnome-contacts,gnome-maps,gnome-weather,gnome-music,evolution,parole,rhythmbox,showtime,epiphany,decibels,dragonplayer,elisa,cosmic-player,transmission,pragha,totem,exaile,mpv,juk}
-rm -rf ~/.cache/{epiphany,decibels,gnome-user-docs,gnome-contacts,gnome-maps,gnome-weather,gnome-music,evolution,parole,rhythmbox,showtime,epiphany,decibels,dragonplayer,elisa,cosmic-player,transmission,pragha,totem,exaile,mpv,juk}
-
-if rpm -q plasma-desktop &>/dev/null || rpm -q plasma-workspace &>/dev/null; then
-    mkdir -p ~/.config
-    cat > ~/.config/kwalletrc << 'EOF'
-[Wallet]
-Close When Idle=false
-Close on Screensaver=false
-Default Wallet=kdewallet
-Enabled=false
-First Use=false
-Idle Timeout=10
-Launch Manager=false
-Leave Manager Open=false
-Leave Open=true
-Prompt on Open=false
-Use One Wallet=true
-
-[org.freedesktop.secrets]
-apiEnabled=false
-EOF
-fi
-
 # ==========================================================
 #  ETAP 2/4: INSTALACJA
 # ==========================================================
 show_progress 4 $TOTAL_STEPS "$MSG_PHASE_2"
 
 wait_for_zypper_lock
-install_missing -y google-chrome-stable || true
-install_missing -y brave-origin || true
-
-wait_for_zypper_lock
 sudo zypper --gpg-auto-import-keys refresh --force || true
+wait_for_zypper_lock
+sudo zypper dup -y --allow-vendor-change || true
 
 show_progress 5 $TOTAL_STEPS "$MSG_PHASE_2"
 
@@ -467,8 +432,13 @@ SYSTEM_PKGS=(
     telegram-desktop qbittorrent zsh faugus-launcher gnome-disk-utility
     bleachbit makeself vim cdemu-daemon cdemu-client vlc
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko winetricks
-    cmake meson patterns-devel-base-devel_basis kernel-devel ghostwriter
+    cmake meson patterns-devel-base-devel_basis ghostwriter
     qmmp ninja pkgconf-pkg-config clang llvm pipewire-alsa
+    google-chrome-stable brave-origin flatpak zram-generator
+    virt-manager qemu-tools libvirt libvirt-daemon-qemu
+    libxcb1 libQt6Gui6 libQt6Quick6 libQt6QuickControls2-6
+    libQt6QuickDialogs2-6 libQt6QuickLayouts6 qt6-QuickControls2
+    qt6-qml qt6-qml-private-devel qt6-declarative-tools
 )
 
 PKGS_32BIT=(
@@ -492,7 +462,29 @@ for vendor in "${GPU_VENDORS[@]}"; do
     esac
 done
 
-if [ "${#GPU_VENDORS[@]}" -gt 0 ]; then
+pkg_available() {
+    wait_for_zypper_lock
+    sudo zypper --non-interactive install --dry-run "$1" &>/dev/null
+}
+
+QEMU_PKG=""
+for candidate in qemu-kvm qemu-x86 qemu; do
+    if pkg_available "$candidate"; then
+        QEMU_PKG="$candidate"
+        break
+    fi
+done
+[[ -z "$QEMU_PKG" ]] && QEMU_PKG="qemu-x86"
+SYSTEM_PKGS+=("$QEMU_PKG")
+
+for candidate in qemu-ovmf-x86_64 ovmf edk2-ovmf; do
+    if pkg_available "$candidate"; then
+        SYSTEM_PKGS+=("$candidate")
+        break
+    fi
+done
+
+if [ "${#SYSTEM_PKGS[@]}" -gt 0 ]; then
     readarray -t SYSTEM_PKGS < <(printf '%s\n' "${SYSTEM_PKGS[@]}" | awk '!seen[$0]++')
 fi
 
@@ -500,27 +492,7 @@ install_zypper_pkgs "${SYSTEM_PKGS[@]}"
 install_zypper_pkgs "${PKGS_32BIT[@]}"
 install_zypper_pkgs "${PKGS_CODECS[@]}"
 
-DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
-FORCE_DRIVERS=""
-if [[ $GPU_TYPE == *"nvidia"* ]]; then
-    FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
-fi
-if [[ $GPU_TYPE == *"amd"* ]]; then
-    FORCE_DRIVERS+=" amdgpu"
-fi
-if [[ $GPU_TYPE == *"intel"* ]]; then
-    FORCE_DRIVERS+=" i915"
-fi
-
-if [ -n "$FORCE_DRIVERS" ]; then
-    echo "force_drivers+=\"${FORCE_DRIVERS} \"" | sudo tee "$DRACUT_CONF" > /dev/null
-else
-    sudo rm -f "$DRACUT_CONF"
-fi
-
-if [[ -f "$DRACUT_CONF" ]]; then
-    sudo dracut --force || true
-fi
+sudo depmod -a &>/dev/null || true
 
 sudo systemctl disable --now cdemu-daemon 2>/dev/null || true
 sudo systemctl mask cdemu-daemon 2>/dev/null || true
@@ -539,6 +511,16 @@ pkill -f gcdemu 2>/dev/null || true
 
 show_progress 6 $TOTAL_STEPS "$MSG_PHASE_2"
 
+if command -v flatpak &>/dev/null; then
+    sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+    sudo flatpak update --appstream 2>/dev/null || true
+    flatpak info com.github.tchx84.Flatseal &>/dev/null || sudo flatpak install -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
+    flatpak info it.mijorus.gearlever &>/dev/null || sudo flatpak install -y flathub it.mijorus.gearlever 2>/dev/null || true
+    pkg_installed faugus-launcher || flatpak info io.github.Faugus.faugus-launcher &>/dev/null || sudo flatpak install -y flathub io.github.Faugus.faugus-launcher 2>/dev/null || true
+fi
+
+show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
+
 download_rpm() {
     local name="$1" url="$2" dest="$3"
     wget -q --timeout=30 -O "$dest" "$url" || { rm -f "$dest"; FAILED_PACKAGES+=("$name"); }
@@ -549,31 +531,38 @@ install_discord_rpm() {
     if wget -q --user-agent="Mozilla/5.0" "https://discord.com/api/download?platform=linux&format=rpm" -O "$dest"; then
         if file "$dest" | grep -q "RPM"; then
             wait_for_zypper_lock
-            sudo zypper install -y --allow-unsigned-rpm "$dest" 2>/dev/null || true
+            sudo zypper install -y --allow-unsigned-rpm "$dest" 2>/dev/null || FAILED_PACKAGES+=("discord")
+        else
+            FAILED_PACKAGES+=("discord")
         fi
         rm -f "$dest"
+    else
+        FAILED_PACKAGES+=("discord")
     fi
 }
 
 wait_for_zypper_lock
-if rpm -q discord &>/dev/null; then
+if pkg_installed discord; then
     :
-elif sudo zypper repos 2>/dev/null | grep -iq "packman"; then
-    install_missing -y discord 2>/dev/null || install_discord_rpm
+elif sudo zypper install -y --allow-vendor-change discord 2>/dev/null; then
+    :
 else
     install_discord_rpm
 fi
 
-OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
-[[ -n "$OPENCODE_URL" ]] && ! rpm -q opencode-desktop &>/dev/null && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
+OPENCODE_URL=""
+pkg_installed opencode-desktop || OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
+[[ -n "$OPENCODE_URL" ]] && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
 
 shopt -s nullglob
 RPM_FILES=("$RPM_DIR"/*.rpm)
+shopt -u nullglob
 if [[ ${#RPM_FILES[@]} -gt 0 ]]; then
     wait_for_zypper_lock
-    sudo zypper install -y --allow-unsigned-rpm "${RPM_FILES[@]}" 2>/dev/null || true
+    for rpm_file in "${RPM_FILES[@]}"; do
+        sudo zypper install -y --allow-unsigned-rpm "$rpm_file" 2>/dev/null || FAILED_PACKAGES+=("$(basename "$rpm_file" .rpm)")
+    done
 fi
-shopt -u nullglob
 rm -rf "$RPM_DIR"
 
 LSFG_TMP="$(mktemp -d)"
@@ -613,35 +602,134 @@ if [[ "$LSFG_INSTALLED" -eq 0 ]]; then
 fi
 rm -rf "$LSFG_TMP"
 
-show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
+show_progress 8 $TOTAL_STEPS "$MSG_PHASE_2"
 
-pkg_available() {
-    wait_for_zypper_lock
-    sudo zypper --non-interactive install --dry-run "$1" &>/dev/null
-}
+# ==========================================================
+#  ETAP 3/4: OPTYMALIZACJA
+# ==========================================================
+show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
 
-QEMU_PKG=""
-for candidate in qemu-kvm qemu-x86 qemu; do
-    if pkg_available "$candidate"; then
-        QEMU_PKG="$candidate"
+restore_packagekit
+
+KERNEL_ARGS=("mitigations=off" "split_lock_detect=off")
+[[ $GPU_TYPE == *"nvidia"* ]] && KERNEL_ARGS+=("nvidia_drm.modeset=1")
+
+LOADER_CONF="/boot/efi/loader/loader.conf"
+if sudo test -f "$LOADER_CONF"; then
+    if sudo grep -q "^#\?timeout" "$LOADER_CONF"; then
+        sudo sed -i -E 's/^#?[[:space:]]*timeout[[:space:]].*/timeout 0/' "$LOADER_CONF"
+    else
+        echo "timeout 0" | sudo tee -a "$LOADER_CONF" > /dev/null
+    fi
+    if command -v bootctl >/dev/null 2>&1; then
+        sudo bootctl set-timeout 0 || true
+    fi
+fi
+
+if [[ -f /etc/kernel/cmdline ]]; then
+    CMDLINE_CHANGED=0
+    for arg in "${KERNEL_ARGS[@]}"; do
+        if ! grep -qw "$arg" /etc/kernel/cmdline; then
+            sudo sed -i "1s/\$/ $arg/" /etc/kernel/cmdline || true
+            CMDLINE_CHANGED=1
+        fi
+    done
+    if [[ "$CMDLINE_CHANGED" -eq 1 ]] && command -v sdbootutil >/dev/null 2>&1; then
+        sudo sdbootutil update-all-entries || true
+    fi
+fi
+
+if [[ -f /etc/default/grub ]] && command -v grub2-mkconfig >/dev/null 2>&1; then
+    sudo sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub || true
+    for arg in "${KERNEL_ARGS[@]}"; do
+        grep -q "$arg" /etc/default/grub || sudo sed -i "s/^\(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*\)\"/\1 $arg\"/" /etc/default/grub || true
+    done
+    sudo grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
+fi
+
+show_progress 10 $TOTAL_STEPS "$MSG_PHASE_3"
+
+DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
+FORCE_DRIVERS=""
+if [[ $GPU_TYPE == *"nvidia"* ]]; then
+    FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
+fi
+if [[ $GPU_TYPE == *"amd"* ]]; then
+    FORCE_DRIVERS+=" amdgpu"
+fi
+if [[ $GPU_TYPE == *"intel"* ]]; then
+    FORCE_DRIVERS+=" i915"
+fi
+
+if [ -n "$FORCE_DRIVERS" ]; then
+    echo "force_drivers+=\"${FORCE_DRIVERS} \"" | sudo tee "$DRACUT_CONF" > /dev/null
+    sudo dracut --force || true
+else
+    sudo rm -f "$DRACUT_CONF"
+fi
+
+show_progress 11 $TOTAL_STEPS "$MSG_PHASE_3"
+
+sudo systemctl enable --now fstrim.timer || true
+sudo systemctl enable --now bluetooth || true
+echo "options btusb enable_autosuspend=0" | sudo tee /etc/modprobe.d/btusb.conf > /dev/null
+
+sudo tee /etc/systemd/zram-generator.conf >/dev/null <<'ZRAMEOF'
+[zram0]
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap
+ZRAMEOF
+sudo tee /etc/sysctl.d/99-zram.conf >/dev/null <<'SYSEOF'
+vm.swappiness = 180
+vm.watermark_boost_factor = 0
+vm.watermark_scale_factor = 125
+vm.page-cluster = 0
+SYSEOF
+sudo sysctl --system >/dev/null 2>&1 || true
+sudo systemctl daemon-reload || true
+sudo systemctl start /dev/zram0 2>/dev/null || sudo systemctl restart systemd-zram-setup@zram0.service 2>/dev/null || true
+
+for svc in libvirtd virtqemud; do
+    if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "$svc"; then
+        sudo systemctl enable --now "${svc}.service" 2>/dev/null || true
         break
     fi
 done
-[[ -z "$QEMU_PKG" ]] && QEMU_PKG="qemu-x86"
 
-OVMF_PKG=""
-for candidate in qemu-ovmf-x86_64 ovmf edk2-ovmf; do
-    if pkg_available "$candidate"; then
-        OVMF_PKG="$candidate"
-        break
+LIBVIRT_NET="192.168.122.0/24"
+if ip -4 -o addr show 2>/dev/null | awk '$2 != "virbr0" && $4 ~ /^192\.168\.122\./ {found=1} END {exit !found}'; then
+    LIBVIRT_NET="192.168.150.0/24"
+fi
+
+if ! sudo virsh net-info default &>/dev/null; then
+    sudo virsh net-define /usr/share/libvirt/networks/default.xml 2>/dev/null || true
+fi
+
+if [[ "$LIBVIRT_NET" == "192.168.150.0/24" ]]; then
+    LIBVIRT_NET_XML="$(mktemp)"
+    if sudo virsh net-dumpxml default --inactive 2>/dev/null > "$LIBVIRT_NET_XML" && grep -q '192\.168\.122\.' "$LIBVIRT_NET_XML"; then
+        sed -i 's/192\.168\.122\./192.168.150./g' "$LIBVIRT_NET_XML"
+        sudo virsh net-destroy default 2>/dev/null || true
+        sudo virsh net-undefine default 2>/dev/null || true
+        sudo virsh net-define "$LIBVIRT_NET_XML" 2>/dev/null || true
     fi
-done
+    rm -f "$LIBVIRT_NET_XML"
+fi
 
-VIRT_PACKAGES=(virt-manager "$QEMU_PKG" qemu-tools libvirt libvirt-daemon-qemu)
-[[ -n "$OVMF_PKG" ]] && VIRT_PACKAGES+=("$OVMF_PKG")
+sudo virsh net-start default 2>/dev/null || true
+sudo virsh net-autostart default 2>/dev/null || true
 
-wait_for_zypper_lock
-install_missing -y --allow-vendor-change "${VIRT_PACKAGES[@]}" 2>/dev/null || true
+if command -v firewall-cmd &>/dev/null; then
+    sudo systemctl enable --now firewalld 2>/dev/null || true
+    sudo firewall-cmd --permanent --zone=libvirt --add-interface=virbr0 2>/dev/null || true
+    sudo firewall-cmd --permanent --zone=trusted --add-source="$LIBVIRT_NET" 2>/dev/null || true
+    if pkg_installed openssh-server || systemctl is-active --quiet sshd 2>/dev/null; then
+        sudo firewall-cmd --permanent --add-service=ssh 2>/dev/null || true
+    fi
+    sudo firewall-cmd --reload 2>/dev/null || true
+fi
 
 if command -v dconf &>/dev/null; then
     dconf load /org/virt-manager/virt-manager/ <<'DCONFEOF'
@@ -678,51 +766,13 @@ enable-net-poll=true
 [vmlist-fields]
 disk-usage=false
 network-traffic=false
-
-autoconnect=1
-vm-window-size=(1280, 842)
 DCONFEOF
 fi
 
-for svc in libvirtd virtqemud; do
-    if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "$svc"; then
-        sudo systemctl enable --now "${svc}.service" 2>/dev/null || true
-        break
-    fi
-done
-
-LIBVIRT_NET="192.168.122.0/24"
-if ip -4 -o addr show 2>/dev/null | awk '$2 != "virbr0" && $4 ~ /^192\.168\.122\./ {found=1} END {exit !found}'; then
-    LIBVIRT_NET="192.168.150.0/24"
-fi
-
-if ! sudo virsh net-info default &>/dev/null; then
-    sudo virsh net-define /usr/share/libvirt/networks/default.xml 2>/dev/null || true
-fi
-
-if [[ "$LIBVIRT_NET" == "192.168.150.0/24" ]]; then
-    LIBVIRT_NET_XML="$(mktemp)"
-    if sudo virsh net-dumpxml default --inactive 2>/dev/null > "$LIBVIRT_NET_XML" && grep -q '192\.168\.122\.' "$LIBVIRT_NET_XML"; then
-        sed -i 's/192\.168\.122\./192.168.150./g' "$LIBVIRT_NET_XML"
-        sudo virsh net-destroy default 2>/dev/null || true
-        sudo virsh net-undefine default 2>/dev/null || true
-        sudo virsh net-define "$LIBVIRT_NET_XML" 2>/dev/null || true
-    fi
-    rm -f "$LIBVIRT_NET_XML"
-fi
-
-sudo virsh net-start default 2>/dev/null || true
-sudo virsh net-autostart default 2>/dev/null || true
-
-if command -v firewall-cmd &>/dev/null; then
-    sudo systemctl enable --now firewalld 2>/dev/null || true
-    sudo firewall-cmd --permanent --zone=libvirt --add-interface=virbr0 2>/dev/null || true
-    sudo firewall-cmd --permanent --zone=trusted --add-source="$LIBVIRT_NET" 2>/dev/null || true
-    if rpm -q openssh-server &>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
-        sudo firewall-cmd --permanent --add-service=ssh 2>/dev/null || true
-    fi
-    sudo firewall-cmd --reload 2>/dev/null || true
-fi
+sudo sed -i 's/^#\?[[:space:]]*DefaultTimeoutStopSec=.*/DefaultTimeoutStopSec=3s/' /etc/systemd/system.conf 2>/dev/null || true
+sudo sed -i 's/^#\?[[:space:]]*DefaultTimeoutStartSec=.*/DefaultTimeoutStartSec=3s/' /etc/systemd/system.conf 2>/dev/null || true
+sudo systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
+sudo journalctl --vacuum-time=2d || true
 
 for grp in libvirt kvm; do
     if getent group "$grp" &>/dev/null; then
@@ -730,81 +780,7 @@ for grp in libvirt kvm; do
     fi
 done
 
-show_progress 8 $TOTAL_STEPS "$MSG_PHASE_2"
-
-wait_for_zypper_lock
-install_missing -y flatpak 2>/dev/null || true
-flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
-flatpak update --appstream 2>/dev/null || true
-
-flatpak info com.github.tchx84.Flatseal &>/dev/null || flatpak install --user -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
-flatpak info it.mijorus.gearlever &>/dev/null || flatpak install --user -y flathub it.mijorus.gearlever 2>/dev/null || true
-rpm -q faugus-launcher &>/dev/null || flatpak info io.github.Faugus.faugus-launcher &>/dev/null || flatpak install --user -y flathub io.github.Faugus.faugus-launcher 2>/dev/null || true
-
-# ==========================================================
-#  ETAP 3/4: OPTYMALIZACJA
-# ==========================================================
-show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
-
-sudo systemctl unmask packagekit.service packagekit-offline-update.service 2>/dev/null || true
-restore_packagekit
-sudo systemctl enable fstrim.timer || true
-wait_for_zypper_lock
-install_missing -y zram-generator || true
-sudo tee /etc/systemd/zram-generator.conf >/dev/null <<'ZRAMEOF'
-[zram0]
-zram-size = min(ram / 2, 8192)
-compression-algorithm = zstd
-swap-priority = 100
-fs-type = swap
-ZRAMEOF
-sudo tee /etc/sysctl.d/99-zram.conf >/dev/null <<'SYSEOF'
-vm.swappiness = 180
-vm.watermark_boost_factor = 0
-vm.watermark_scale_factor = 125
-vm.page-cluster = 0
-SYSEOF
-sudo sysctl --system >/dev/null 2>&1 || true
-sudo systemctl daemon-reload || true
-sudo systemctl start /dev/zram0 2>/dev/null || sudo systemctl restart systemd-zram-setup@zram0.service 2>/dev/null || true
-sudo journalctl --vacuum-time=2d || true
-
-show_progress 10 $TOTAL_STEPS "$MSG_PHASE_3"
-
-LOADER_CONF="/boot/efi/loader/loader.conf"
-if sudo test -f "$LOADER_CONF"; then
-    if sudo grep -q "^#\?timeout" "$LOADER_CONF"; then
-        sudo sed -i -E 's/^#?[[:space:]]*timeout[[:space:]].*/timeout 0/' "$LOADER_CONF"
-    else
-        echo "timeout 0" | sudo tee -a "$LOADER_CONF" > /dev/null
-    fi
-    if command -v bootctl >/dev/null 2>&1; then
-        sudo bootctl set-timeout 0 || true
-    fi
-fi
-
-if [[ -f /etc/kernel/cmdline ]] && ! grep -qw 'mitigations=off' /etc/kernel/cmdline; then
-    sudo sed -i '1s/$/ mitigations=off/' /etc/kernel/cmdline || true
-    if command -v sdbootutil >/dev/null 2>&1; then
-        sudo sdbootutil update-all-entries || true
-    fi
-fi
-if [[ -f /etc/kernel/cmdline ]] && ! grep -qw 'split_lock_detect=off' /etc/kernel/cmdline; then
-    sudo sed -i '1s/$/ split_lock_detect=off/' /etc/kernel/cmdline || true
-    if command -v sdbootutil >/dev/null 2>&1; then
-        sudo sdbootutil update-all-entries || true
-    fi
-fi
-if [[ -f /etc/default/grub ]] && command -v grub2-mkconfig >/dev/null 2>&1; then
-    grep -q 'mitigations=off' /etc/default/grub || sudo sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 mitigations=off"/' /etc/default/grub || true
-    grep -q 'split_lock_detect=off' /etc/default/grub || sudo sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 split_lock_detect=off"/' /etc/default/grub || true
-    sudo grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
-fi
-
-show_progress 11 $TOTAL_STEPS "$MSG_PHASE_3"
-
 ZSH_BIN=$(command -v zsh || true)
-
 if [[ -n "$ZSH_BIN" ]]; then
     sudo chsh -s "$ZSH_BIN" "$CURRENT_USER" || true
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
@@ -826,10 +802,10 @@ if [[ -n "$ZSH_BIN" ]]; then
         git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting.git "$SYNTAX_HIGHLIGHT_DIR" || true
     fi
 
-    ZSHRC="$HOME/.zshrc"
-    if [[ -f "$ZSHRC" ]]; then
-        sed -i 's|^ZSH_THEME=.*|ZSH_THEME="powerlevel10k/powerlevel10k"|' "$ZSHRC" || true
-        sed -i 's/^plugins=(.*/plugins=(git sudo systemd suse zsh-autosuggestions zsh-syntax-highlighting)/' "$ZSHRC" || true
+    if [[ -f ~/.zshrc ]]; then
+        sed -i 's|^ZSH_THEME=.*|ZSH_THEME="powerlevel10k/powerlevel10k"|' ~/.zshrc || true
+        sed -i 's/^plugins=(.*/plugins=(git sudo systemd suse zsh-autosuggestions zsh-syntax-highlighting)/' ~/.zshrc || true
+
         SHELL_LOCALE="${LANG:-${LC_ALL:-${LC_MESSAGES:-en_US.UTF-8}}}"
         if command -v locale &>/dev/null; then
             AVAILABLE_LOCALES="$(locale -a 2>/dev/null)"
@@ -837,8 +813,14 @@ if [[ -n "$ZSH_BIN" ]]; then
                 SHELL_LOCALE="en_US.UTF-8"
             fi
         fi
-        grep -q "^export LC_ALL=" "$ZSHRC" || echo "export LC_ALL=${SHELL_LOCALE}" >> "$ZSHRC"
-        grep -q "^fastfetch"          "$ZSHRC" || echo "fastfetch"                  >> "$ZSHRC"
+        if ! grep -q "^export LC_ALL=" ~/.zshrc; then
+            {
+                echo ""
+                echo "export LC_ALL=${SHELL_LOCALE}"
+                echo "export LC_MESSAGES=${SHELL_LOCALE}"
+                echo "fastfetch"
+            } >> ~/.zshrc
+        fi
     fi
 fi
 
@@ -871,9 +853,6 @@ read -r RESTART_CHOICE < /dev/tty
 case "$RESTART_CHOICE" in
     [YyTt]*)
         DO_REBOOT=1
-        exit 0
-        ;;
-    *)
-        exit 0
         ;;
 esac
+exit 0
