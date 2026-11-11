@@ -514,9 +514,18 @@ show_progress 6 $TOTAL_STEPS "$MSG_PHASE_2"
 if command -v flatpak &>/dev/null; then
     sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
     sudo flatpak update --appstream 2>/dev/null || true
-    flatpak info com.github.tchx84.Flatseal &>/dev/null || sudo flatpak install -y flathub com.github.tchx84.Flatseal 2>/dev/null || true
-    flatpak info it.mijorus.gearlever &>/dev/null || sudo flatpak install -y flathub it.mijorus.gearlever 2>/dev/null || true
-    pkg_installed faugus-launcher || flatpak info io.github.Faugus.faugus-launcher &>/dev/null || sudo flatpak install -y flathub io.github.Faugus.faugus-launcher 2>/dev/null || true
+    for fp_app in com.github.tchx84.Flatseal it.mijorus.gearlever; do
+        flatpak info "$fp_app" &>/dev/null || sudo flatpak install -y flathub "$fp_app" 2>/dev/null || FAILED_PACKAGES+=("flatpak:$fp_app")
+    done
+    if ! pkg_installed faugus-launcher && ! flatpak info io.github.Faugus.faugus-launcher &>/dev/null; then
+        if sudo flatpak install -y flathub io.github.Faugus.faugus-launcher 2>/dev/null; then
+            kept_failed=()
+            for failed_pkg in "${FAILED_PACKAGES[@]}"; do
+                [[ "$failed_pkg" == "faugus-launcher" ]] || kept_failed+=("$failed_pkg")
+            done
+            FAILED_PACKAGES=("${kept_failed[@]}")
+        fi
+    fi
 fi
 
 show_progress 7 $TOTAL_STEPS "$MSG_PHASE_2"
@@ -552,7 +561,13 @@ fi
 
 OPENCODE_URL=""
 pkg_installed opencode-desktop || OPENCODE_URL=$(curl -sfL https://api.github.com/repos/anomalyco/opencode/releases/latest | grep "browser_download_url.*opencode-desktop-linux-x86_64\.rpm" | cut -d '"' -f 4 || true)
-[[ -n "$OPENCODE_URL" ]] && download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
+if ! pkg_installed opencode-desktop; then
+    if [[ -n "$OPENCODE_URL" ]]; then
+        download_rpm "opencode-desktop" "$OPENCODE_URL" "$RPM_DIR/opencode-desktop.rpm"
+    else
+        FAILED_PACKAGES+=("opencode-desktop")
+    fi
+fi
 
 shopt -s nullglob
 RPM_FILES=("$RPM_DIR"/*.rpm)
@@ -598,7 +613,7 @@ if [[ -n "$LSFG_URL" ]] && curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e
 fi
 
 if [[ "$LSFG_INSTALLED" -eq 0 ]]; then
-    log_warn "lsfg-vk: brak gotowej paczki, pomijam" "lsfg-vk: no prebuilt package, skipping"
+    FAILED_PACKAGES+=("lsfg-vk")
 fi
 rm -rf "$LSFG_TMP"
 
@@ -785,21 +800,22 @@ if [[ -n "$ZSH_BIN" ]]; then
     sudo chsh -s "$ZSH_BIN" "$CURRENT_USER" || true
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
         sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || true
+        [[ -d "$HOME/.oh-my-zsh" ]] || FAILED_PACKAGES+=("oh-my-zsh")
     fi
 
     P10K_DIR="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k"
     if [[ ! -d "$P10K_DIR" ]]; then
-        git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$P10K_DIR" || true
+        git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$P10K_DIR" || FAILED_PACKAGES+=("powerlevel10k")
     fi
 
     ZSH_CUSTOM_DIR="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
     AUTOSUGGESTIONS_DIR="$ZSH_CUSTOM_DIR/plugins/zsh-autosuggestions"
     if [[ ! -d "$AUTOSUGGESTIONS_DIR" ]]; then
-        git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git "$AUTOSUGGESTIONS_DIR" || true
+        git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git "$AUTOSUGGESTIONS_DIR" || FAILED_PACKAGES+=("zsh-autosuggestions")
     fi
     SYNTAX_HIGHLIGHT_DIR="$ZSH_CUSTOM_DIR/plugins/zsh-syntax-highlighting"
     if [[ ! -d "$SYNTAX_HIGHLIGHT_DIR" ]]; then
-        git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting.git "$SYNTAX_HIGHLIGHT_DIR" || true
+        git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting.git "$SYNTAX_HIGHLIGHT_DIR" || FAILED_PACKAGES+=("zsh-syntax-highlighting")
     fi
 
     if [[ -f ~/.zshrc ]]; then
