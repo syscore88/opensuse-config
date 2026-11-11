@@ -406,8 +406,9 @@ TO_REMOVE=(
     kaddressbook kdepim-runtime akonadi-server akregator transmission-qt
     epiphany decibels korganizer kwalletmanager rhythmbox showtime
     gnome-calendar gnome-clocks gnome-user-docs gnome-contacts exaile mpv
-    evolution evolution-ews evolution-data-server "evolution*"
-    gnome-maps gnome-weather yelp totem parole gnome-music pragha juk
+    evolution evolution-ews evolution-data-server evolution 
+    evolution-bogofilter evolution-spamassassin pragha juk
+    gnome-maps gnome-weather yelp totem parole gnome-music 
     )
 wait_for_zypper_lock
 for pkg in "${TO_REMOVE[@]}"; do
