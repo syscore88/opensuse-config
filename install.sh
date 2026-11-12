@@ -436,10 +436,9 @@ SYSTEM_PKGS=(
     qmmp ninja pkgconf-pkg-config clang llvm pipewire-alsa
     google-chrome-stable brave-origin flatpak zram-generator
     virt-manager qemu-tools libvirt libvirt-daemon-qemu
-    libxcb1 libQt6Core6 libQt6Widgets6 libQt6Gui6 libQt6Quick6 libQt6QuickControls2-6
-    libQt6QuickDialogs2-6 libQt6QuickLayouts6 libQt6QuickTemplates2-6
-    libQt6Qml6 libQt6QmlModels6 libQt6QmlWorkerScript6 libQt6Svg6
-    qt6-declarative-imports qt6-qml-private-devel qt6-declarative-tools
+    libxcb1 libQt6Core6 libQt6Gui6 libQt6Widgets6 libQt6Qml6 libQt6QmlWorkerScript6
+    libQt6Quick6 libQt6QuickControls2-6 libQt6QuickDialogs2-6
+    libQt6QuickLayouts6 libQt6QuickTemplates2-6 qt6-declarative-imports
 )
 
 PKGS_32BIT=(
