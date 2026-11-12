@@ -280,7 +280,7 @@ HYBRID_GPU=false
 GPU_VENDORS=()
 GPU_UNKNOWN_PKGS=(
     Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan1 libvulkan1-32bit
-    Mesa-libOpenCL vulkan-devel Mesa-libGL-devel
+    Mesa-libRusticlOpenCL vulkan-devel Mesa-libGL-devel
 )
 if command -v lspci &>/dev/null; then
     GPU_INFO=$(lspci | grep -i -E "vga|3d|display" || true)
@@ -436,16 +436,17 @@ SYSTEM_PKGS=(
     qmmp ninja pkgconf-pkg-config clang llvm pipewire-alsa
     google-chrome-stable brave-origin flatpak zram-generator
     virt-manager qemu-tools libvirt libvirt-daemon-qemu
-    libxcb1 libQt6Gui6 libQt6Quick6 libQt6QuickControls2-6
-    libQt6QuickDialogs2-6 libQt6QuickLayouts6 qt6-QuickControls2
-    qt6-qml qt6-qml-private-devel qt6-declarative-tools
+    libxcb1 libQt6Core6 libQt6Widgets6 libQt6Gui6 libQt6Quick6 libQt6QuickControls2-6
+    libQt6QuickDialogs2-6 libQt6QuickLayouts6 libQt6QuickTemplates2-6
+    libQt6Qml6 libQt6QmlModels6 libQt6QmlWorkerScript6 libQt6Svg6
+    qt6-declarative-imports qt6-qml-private-devel qt6-declarative-tools
 )
 
 PKGS_32BIT=(
     mangohud-32bit libgamemode0-32bit libgamemodeauto0-32bit libvkd3d1-32bit wine-staging-32bit
     libopenal1-32bit libXdamage1-32bit libXtst6-32bit
     libgtk-2_0-0-32bit libgtk-3-0-32bit
-    libpulse0-32bit libpipewire-0_3-0-32bit alsa-plugins-32bit pipewire-alsa-32bit
+    libpulse0-32bit libpipewire-0_3-0-32bit alsa-plugins-pulse-32bit pipewire-alsa-32bit
     libXrandr2-32bit libXrender1-32bit
 )
 
@@ -457,7 +458,7 @@ PKGS_CODECS=(
 for vendor in "${GPU_VENDORS[@]}"; do
     case "$vendor" in
         "nvidia") SYSTEM_PKGS+=(libglvnd-32bit libva-nvidia-driver nvidia-compute-G06 nvidia-compute-G06-32bit) ;;
-        "amd")    SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit Mesa-libva Mesa-libva-32bit Mesa-libOpenCL vulkan-devel Mesa-libGL-devel) ;;
+        "amd")    SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit Mesa-libva Mesa-libva-32bit Mesa-libRusticlOpenCL vulkan-devel Mesa-libGL-devel) ;;
         "intel")  SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit intel-media-driver intel-opencl vulkan-devel Mesa-libGL-devel) ;;
     esac
 done
@@ -583,34 +584,51 @@ rm -rf "$RPM_DIR"
 LSFG_TMP="$(mktemp -d)"
 LSFG_UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 LSFG_BASE="https://builds.lsfg-vk.dev"
-LSFG_URL=""
 LSFG_INSTALLED=0
+LSFG_URLS=()
+
 if LSFG_HTML="$(curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" "$LSFG_BASE/" 2>/dev/null)"; then
-    mapfile -t LSFG_CANDIDATES < <(printf '%s' "$LSFG_HTML" | grep -oiE '[A-Za-z0-9._~:/%+@-]+\.tar\.xz' | awk '!seen[$0]++' || true)
-    LSFG_PATH=""
-    for c in $(printf '%s\n' "${LSFG_CANDIDATES[@]}" | sort -rV); do
-        if [[ "$c" =~ (^|/)lsfg-vk-[0-9]+(\.[0-9]+)*\.tar\.xz$ ]]; then
-            LSFG_PATH="$c"
-            break
-        fi
+    mapfile -t LSFG_CANDIDATES < <(
+        {
+            printf '%s' "$LSFG_HTML" | grep -oiE '(href|src)=["'\''][^"'\'']*lsfg-vk-[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?\.tar\.xz["'\'']' | sed -E 's/^(href|src)=["'\'']//I; s/["'\'']$//'
+            printf '%s' "$LSFG_HTML" | grep -oiE '(https?://[^"'\'' <>[:space:]]+/)?lsfg-vk-[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?\.tar\.xz'
+        } | awk 'NF && !seen[$0]++' | sort -rV || true
+    )
+    for c in "${LSFG_CANDIDATES[@]}"; do
+        [[ -z "$c" ]] && continue
+        case "$c" in
+            http*://*) u="$c" ;;
+            //*)       u="https:$c" ;;
+            /*)        u="$LSFG_BASE$c" ;;
+            *)         u="$LSFG_BASE/${c#./}" ;;
+        esac
+        LSFG_URLS+=("$u")
     done
-    if [[ -z "$LSFG_PATH" && ${#LSFG_CANDIDATES[@]} -gt 0 ]]; then
-        LSFG_PATH="${LSFG_CANDIDATES[0]}"
-    fi
-    case "$LSFG_PATH" in
-        http*://*) LSFG_URL="$LSFG_PATH" ;;
-        //*)       LSFG_URL="https:$LSFG_PATH" ;;
-        /*)        LSFG_URL="$LSFG_BASE$LSFG_PATH" ;;
-        ?*)        LSFG_URL="$LSFG_BASE/${LSFG_PATH#./}" ;;
-    esac
 fi
 
-if [[ -n "$LSFG_URL" ]] && curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL" 2>/dev/null && tar -tf "$LSFG_TMP/lsfg-vk.tar.xz" &>/dev/null; then
-    mkdir -p "$HOME/.local"
-    if tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" -C "$HOME/.local"; then
-        LSFG_INSTALLED=1
+for LSFG_URL in "${LSFG_URLS[@]}"; do
+    rm -f "$LSFG_TMP/lsfg-vk.tar.xz"
+    if curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" -o "$LSFG_TMP/lsfg-vk.tar.xz" "$LSFG_URL" 2>/dev/null; then
+        if LSFG_TAR_LIST="$(tar -tf "$LSFG_TMP/lsfg-vk.tar.xz" 2>/dev/null)"; then
+            if printf '%s\n' "$LSFG_TAR_LIST" | grep -qE '(^|/)bin/lsfg-vk-(ui|cli)$'; then
+                BIN_LINE="$(printf '%s\n' "$LSFG_TAR_LIST" | grep -E '(^|/)bin/lsfg-vk-(ui|cli)$' | head -n 1)"
+                PREFIX="${BIN_LINE%bin/lsfg-vk-*}"
+                PREFIX="${PREFIX#./}"
+                STRIP=0
+                if [[ -n "$PREFIX" ]]; then
+                    STRIP="$(awk -F'/' '{print NF-1}' <<< "$PREFIX")"
+                fi
+                mkdir -p "$HOME/.local"
+                if tar -xf "$LSFG_TMP/lsfg-vk.tar.xz" --strip-components="$STRIP" -C "$HOME/.local" 2>/dev/null; then
+                    if [[ -x "$HOME/.local/bin/lsfg-vk-ui" || -x "$HOME/.local/bin/lsfg-vk-cli" ]]; then
+                        LSFG_INSTALLED=1
+                        break
+                    fi
+                fi
+            fi
+        fi
     fi
-fi
+done
 
 if [[ "$LSFG_INSTALLED" -eq 0 ]]; then
     FAILED_PACKAGES+=("lsfg-vk")
