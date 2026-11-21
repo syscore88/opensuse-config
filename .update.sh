@@ -39,8 +39,22 @@ LOG_FILE="$HOME/update_error_$(date +%Y%m%d_%H%M%S).log"
 exec 3>&1
 exec >>"$TMP_LOG" 2>&1
 
+PRIVS_GRANTED=0
+
+remove_temp_privs() {
+    [[ "$PRIVS_GRANTED" -eq 1 ]] || return 0
+    if [[ "$USE_RUN0" -eq 1 ]]; then
+        sudo -n rm -f "$RUN0_NOPASSWD_FILE" 2>/dev/null
+        sudo -n systemctl try-restart polkit 2>/dev/null || true
+    else
+        sudo -n rm -f /etc/sudoers.d/99-temp-update 2>/dev/null
+    fi
+    PRIVS_GRANTED=0
+}
+
 cleanup_on_exit() {
     local exit_code=$?
+    remove_temp_privs
     printf '\033[?25h' >&3
     echo "" >&3
     if [ "$exit_code" -ne 0 ]; then
@@ -93,17 +107,22 @@ show_progress() {
     cp -f "$TMP_LOG" "$LOG_FILE" 2>/dev/null || true
 }
 
-log_line() {
-    printf "\r\033[K" >&3
-    echo -e "$1" >&3
-}
-
 CURRENT_USER=$(whoami)
 RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
 USE_RUN0=0
 if ! command -v visudo >/dev/null 2>&1 || sudo --version 2>/dev/null | grep -qi "run0"; then
     USE_RUN0=1
 fi
+
+cleanup_stale_privs() {
+    sudo -n true 2>/dev/null || return 0
+    sudo -n rm -f /etc/sudoers.d/99-temp-update 2>/dev/null
+    if sudo -n test -f "$RUN0_NOPASSWD_FILE" 2>/dev/null; then
+        sudo -n rm -f "$RUN0_NOPASSWD_FILE" 2>/dev/null
+        sudo -n systemctl try-restart polkit 2>/dev/null || true
+    fi
+}
+cleanup_stale_privs
 
 echo -e "${INFO}======================================================${NC}" >&3
 echo -e "${INFO}${MSG_TITLE}${NC}" >&3
@@ -126,6 +145,7 @@ polkit.addRule(function(action, subject) {
 });
 EOF
     if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" &>/dev/null; then
+        PRIVS_GRANTED=1
         printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' systemctl try-restart polkit 2>/dev/null || true
         if ! sudo -n true 2>/dev/null; then
             printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' systemctl try-restart polkit 2>/dev/null || true
@@ -147,6 +167,7 @@ else
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
     if printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' visudo -cf "$SUDOERS_TMP" &>/dev/null \
        && printf '%s\n' "${SUDO_PASSWORD:-}" | sudo -S -p '' install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99-temp-update &>/dev/null; then
+        PRIVS_GRANTED=1
         rm -f "$SUDOERS_TMP"
         unset SUDO_PASSWORD
         if ! sudo -n true 2>/dev/null; then
@@ -177,7 +198,7 @@ if ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 
-TOTAL_STEPS=15
+TOTAL_STEPS=14
 STEP=0
 show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
@@ -203,59 +224,60 @@ STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 # ---------------------------------------------------------------
 # PHASE: SYSTEM CLEANUP (SUDO)
 # ---------------------------------------------------------------
-ORPHANS=$(zypper packages --unneeded | awk -F'|' 'NR>4 {gsub(/ /, "", $3); print $3}' | grep -v '^$' | sort -u)
+ORPHANS=$(env LC_ALL=C zypper -q packages --unneeded 2>/dev/null \
+    | awk -F'|' 'NF >= 5 && $1 ~ /^[[:space:]]*i/ { gsub(/[[:space:]]/, "", $3); print $3 }' \
+    | sort -u)
 if [ -n "$ORPHANS" ]; then
     sudo zypper --non-interactive rm $ORPHANS
 fi
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
-REPOS_TO_REMOVE=$(zypper lr | awk -F'|' '$4 ~ /No/ {print $2}' | xargs)
+# Wyłączone repozytoria pasujące do tego wyrażenia (alias) NIE są usuwane.
+# Dopisz własne, np. 'debug|source|src|packman'.
+KEEP_REPOS_REGEX='debug|source|src'
+REPOS_TO_REMOVE=$(env LC_ALL=C zypper lr 2>/dev/null \
+    | awk -F'|' '$4 ~ /^[[:space:]]*No/ { gsub(/[[:space:]]/, "", $2); print $2 }' \
+    | grep -viE "$KEEP_REPOS_REGEX")
 if [ -n "$REPOS_TO_REMOVE" ]; then
     for repo in $REPOS_TO_REMOVE; do sudo zypper rr "$repo"; done
 fi
-STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
-
-sudo zypper clean -a
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
 if command -v flatpak &> /dev/null; then
     sudo flatpak uninstall --unused --system --delete-data -y
     sudo flatpak repair --system
 
-    USED_REMOTES=$(flatpak list --system --columns=origin 2>/dev/null | sort -u)
-    ALL_REMOTES=$(flatpak remotes --system --columns=name 2>/dev/null | tail -n +1)
+    USED_REMOTES=$(flatpak list --columns=origin 2>/dev/null | sort -u)
+    ALL_REMOTES=$(flatpak remotes --columns=name 2>/dev/null)
     while IFS= read -r remote; do
-        if [ -n "$remote" ] && ! echo "$USED_REMOTES" | grep -qx "$remote"; then
-            sudo flatpak remote-delete --system --force "$remote" 2>/dev/null
+        if [ -n "$remote" ] && [ "$remote" != "flathub" ] && ! echo "$USED_REMOTES" | grep -qxF -- "$remote"; then
+            sudo flatpak remote-delete --force "$remote" 2>/dev/null
         fi
     done <<< "$ALL_REMOTES"
 
     sudo rm -rf /var/tmp/flatpak-cache-* 2>/dev/null
+    sudo rm -rf /var/lib/flatpak/repo/tmp/* 2>/dev/null
     sudo find /var/lib/flatpak -name "*.tmp" -delete 2>/dev/null
     sudo rm -f /var/lib/flatpak/history 2>/dev/null
-
-    INSTALLED_FLATPAKS=$(flatpak list --app --columns=application 2>/dev/null)
-    if [ -d "/var/app" ]; then
-        for app_dir in /var/app/*; do
-            if [ -d "$app_dir" ]; then
-                app_id=$(basename "$app_dir")
-                if ! echo "$INSTALLED_FLATPAKS" | grep -qx "$app_id"; then
-                    sudo rm -rf "$app_dir"
-                fi
-            fi
-        done
-    fi
 fi
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
 sudo journalctl --vacuum-time=7d
+sudo find /var/log -type f -name "*.gz" -mtime +7 -delete
+sudo find /var/log -type f -name "*.1" -delete
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
 [ -f /sbin/purge-kernels ] && sudo /sbin/purge-kernels
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
-sudo find /tmp -type f -atime +3 -delete 2>/dev/null
-sudo find /var/tmp -type f -atime +3 -delete 2>/dev/null
+sudo find /tmp -xdev -type f -atime +3 \
+    ! -path "/tmp/systemd-private-*" \
+    ! -path "/tmp/.*" \
+    -delete 2>/dev/null
+sudo find /var/tmp -xdev -type f -atime +3 \
+    ! -path "/var/tmp/systemd-private-*" \
+    ! -path "/var/tmp/.*" \
+    -delete 2>/dev/null
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
 # ---------------------------------------------------------------
@@ -269,11 +291,11 @@ if command -v flatpak &> /dev/null; then
     rm -rf ~/.local/share/flatpak/repo/tmp/* 2>/dev/null
 
     INSTALLED_FLATPAKS=$(flatpak list --app --columns=application 2>/dev/null)
-    if [ -d "$HOME/.var/app" ]; then
+    if [ -n "$INSTALLED_FLATPAKS" ] && [ -d "$HOME/.var/app" ]; then
         for app_dir in "$HOME/.var/app"/*; do
             if [ -d "$app_dir" ]; then
                 app_id=$(basename "$app_dir")
-                if ! echo "$INSTALLED_FLATPAKS" | grep -qx "$app_id"; then
+                if ! echo "$INSTALLED_FLATPAKS" | grep -qxF -- "$app_id"; then
                     rm -rf "$app_dir"
                 fi
             fi
@@ -292,6 +314,9 @@ find ~/.cache -type f -atime +14 \
     ! -path "*/BraveSoftware/*" \
     ! -path "*/opera/*" \
     ! -path "*/vivaldi/*" \
+    ! -path "*/huggingface/*" \
+    ! -path "*/torch/*" \
+    ! -path "*/ms-playwright/*" \
     -delete 2>/dev/null
 STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 
@@ -308,19 +333,23 @@ STEP=$((STEP+1)); show_progress $STEP $TOTAL_STEPS "$MSG_PHASE_CLEAN_SYS"
 # ---------------------------------------------------------------
 # REMOVE TEMPORARY PRIVILEGES
 # ---------------------------------------------------------------
-if [[ "$USE_RUN0" -eq 1 ]]; then
-    sudo rm -f "$RUN0_NOPASSWD_FILE"
-    sudo systemctl try-restart polkit 2>/dev/null || true
-else
-    sudo rm -f /etc/sudoers.d/99-temp-update
-fi
+remove_temp_privs
 
-log_line ""
+echo -e "\n" >&3
 echo -e "${SUCCESS}======================================================${NC}" >&3
 echo -e "${SUCCESS}${MSG_DONE}${NC}" >&3
 echo -e "${SUCCESS}======================================================${NC}" >&3
 echo -e "${WARN}${MSG_PRESS_ENTER}${NC}" >&3
 read -r
 
-kill -9 "$PPID" 2>/dev/null
+# Zamknięcie okna terminala: jeśli skrypt uruchomiono z otwartej powłoki,
+# wysyłamy jej SIGHUP (zamiast kill -9). HUP ignorujemy u siebie, żeby trap
+# EXIT nie potraktował zamknięcia okna jako błędu i nie zapisał logu.
+PARENT_COMM="$(ps -o comm= -p "$PPID" 2>/dev/null | tr -d '[:space:]')"
+case "$PARENT_COMM" in
+    bash|zsh|fish|sh|dash|ksh)
+        trap '' HUP
+        kill -HUP "$PPID" 2>/dev/null
+        ;;
+esac
 exit 0
