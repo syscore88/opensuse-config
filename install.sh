@@ -443,7 +443,7 @@ TO_REMOVE=(
 )
 wait_for_zypper_lock
 
-CORE_PKGS=(plasma6-desktop plasma6-workspace gnome-shell gnome-session gdm plasma6-login-manager NetworkManager sudo systemd)
+CORE_PKGS=(plasma6-desktop plasma6-workspace gnome-shell gnome-session gdm plasma6-login-manager cosmic-session NetworkManager sudo systemd)
 EXISTING_LOCKS="$(sudo zypper --non-interactive locks 2>/dev/null || true)"
 for core in "${CORE_PKGS[@]}"; do
     pkg_installed "$core" || continue
