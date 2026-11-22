@@ -533,9 +533,16 @@ PKGS_CODECS=(
     gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav
 )
 
+NV_KERNEL_FLAVOR="$(uname -r | sed 's/.*-//')"
+if [[ " ${GPU_VENDORS[*]} " == *" nvidia "* ]]; then
+    wait_for_zypper_lock
+    sudo zypper addrepo -cfp 90 https://download.nvidia.com/opensuse/tumbleweed nvidia || true
+    sudo zypper --non-interactive --gpg-auto-import-keys refresh || true
+fi
+
 for vendor in "${GPU_VENDORS[@]}"; do
     case "$vendor" in
-        "nvidia") SYSTEM_PKGS+=(libglvnd-32bit libva-nvidia-driver nvidia-compute-G06 nvidia-compute-G06-32bit) ;;
+        "nvidia") SYSTEM_PKGS+=(libglvnd-32bit libva-nvidia-driver "nvidia-open-driver-G06-signed-kmp-${NV_KERNEL_FLAVOR}" nvidia-compute-utils-G06 nvidia-gl-G06 nvidia-gl-G06-32bit nvidia-video-G06 nvidia-video-G06-32bit nvidia-compute-G06 nvidia-compute-G06-32bit) ;;
         "amd")    SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_radeon libvulkan_radeon-32bit Mesa-libva Mesa-libva-32bit Mesa-libRusticlOpenCL vulkan-devel Mesa-libGL-devel) ;;
         "intel")  SYSTEM_PKGS+=(Mesa-dri Mesa-dri-32bit Mesa-libGL1 Mesa-libGL1-32bit libvulkan_intel libvulkan_intel-32bit intel-media-driver intel-opencl vulkan-devel Mesa-libGL-devel) ;;
     esac
@@ -735,18 +742,8 @@ show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
 
 restore_packagekit
 
-NVIDIA_DRIVER_PRESENT=0
-if [[ $GPU_TYPE == *"nvidia"* ]]; then
-    if modinfo nvidia &>/dev/null || [[ -n "$(rpm -qa 'nvidia-driver-G0*' 'nvidia-open-driver-G0*' 2>/dev/null)" ]]; then
-        NVIDIA_DRIVER_PRESENT=1
-    else
-        log_quiet "Wykryto GPU NVIDIA, ale brak sterownika jądra (nvidia-driver-G06 / nvidia-open-driver-G06) - pomijam nvidia_drm.modeset i force_drivers." \
-                  "NVIDIA GPU detected but no kernel driver (nvidia-driver-G06 / nvidia-open-driver-G06) - skipping nvidia_drm.modeset and force_drivers."
-    fi
-fi
-
 KERNEL_ARGS=("mitigations=off" "split_lock_detect=off")
-[[ "$NVIDIA_DRIVER_PRESENT" -eq 1 ]] && KERNEL_ARGS+=("nvidia_drm.modeset=1")
+[[ $GPU_TYPE == *"nvidia"* ]] && KERNEL_ARGS+=("nvidia_drm.modeset=1")
 
 LOADER_CONF="/boot/efi/loader/loader.conf"
 if sudo test -f "$LOADER_CONF"; then
@@ -785,7 +782,7 @@ show_progress 10 $TOTAL_STEPS "$MSG_PHASE_3"
 
 DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
 FORCE_DRIVERS=""
-if [[ "$NVIDIA_DRIVER_PRESENT" -eq 1 ]]; then
+if [[ $GPU_TYPE == *"nvidia"* ]]; then
     FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
 fi
 if [[ $GPU_TYPE == *"amd"* ]]; then
