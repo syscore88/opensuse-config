@@ -4,13 +4,11 @@
 # ======================================================
 
 set -Eeuo pipefail
-export ZYPPER_NONINTERACTIVE=1
 export ZYPP_LOCK_TIMEOUT=300
 export PATH="/usr/sbin:/sbin:$PATH"
 
 detect_system_lang() {
-    local sys_lang="${LANG:-}"
-    [[ -z "$sys_lang" ]] && sys_lang="${LC_ALL:-${LC_MESSAGES:-}}"
+    local sys_lang="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
     if [[ "$sys_lang" == pl* ]]; then
         echo "pl"
     else
@@ -29,37 +27,67 @@ TMP_LOG="$(mktemp /tmp/opensuse-install-log.XXXXXX)"
 LOG_FILE="$HOME/install_error_$(date +%Y%m%d_%H%M%S).log"
 RPM_DIR="$(mktemp -d /tmp/rpm_install_XXXXXX)"
 
+FAILED_PACKAGES=()
+SUDOERS_TMP=""
+LIBVIRT_NET_XML=""
+LSFG_TMP=""
+BRAVE_GNUPGHOME=""
+SUDO_READY=0
+SUDO_KEEPALIVE_PID=""
+QUIET_WARNS=0
+ZYPPER_LOCKED_PKGS=()
+RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
+SUDOERS_NOPASSWD_FILE="/etc/sudoers.d/99-temp-installer"
+
 exec 3>&1
 exec >>"$TMP_LOG" 2>&1
 
 cleanup_on_exit() {
     local exit_code=$?
-    declare -F restore_packagekit >/dev/null && restore_packagekit || true
-    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-    printf '\033[?7h' >&3
-    [[ -n "${RPM_DIR:-}" && -d "$RPM_DIR" ]] && rm -rf "$RPM_DIR"
-    if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
-        echo -e "\n" >&3
-        cp -f "$TMP_LOG" "$LOG_FILE" 2>/dev/null || true
-        if [ "$exit_code" -ne 0 ]; then
-            if [[ "$SCRIPT_LANG" == "pl" ]]; then
-                echo -e "${ERR}[X] Wystąpił błąd (kod: $exit_code). Szczegółowy log zapisano w: $LOG_FILE${NC}" >&3
-            else
-                echo -e "${ERR}[X] An error occurred (code: $exit_code). Detailed log saved to: $LOG_FILE${NC}" >&3
+    trap '' INT TERM HUP
+    trap - ERR
+    set +e
+
+    [ -n "${SUDO_KEEPALIVE_PID:-}" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+    declare -F restore_packagekit >/dev/null && restore_packagekit
+
+    rm -f "$SUDOERS_TMP" "$LIBVIRT_NET_XML"
+    rm -rf "$RPM_DIR" "$LSFG_TMP" "$BRAVE_GNUPGHOME"
+
+    {
+        printf '\033[?7h'
+        if [ "$exit_code" -ne 0 ] || [ "${#FAILED_PACKAGES[@]}" -gt 0 ]; then
+            echo -e "\n"
+            cp -f "$TMP_LOG" "$LOG_FILE"
+            if [ "$exit_code" -ne 0 ]; then
+                if [[ "$SCRIPT_LANG" == "pl" ]]; then
+                    echo -e "${ERR}[X] Wystąpił błąd (kod: $exit_code). Szczegółowy log zapisano w: $LOG_FILE${NC}"
+                else
+                    echo -e "${ERR}[X] An error occurred (code: $exit_code). Detailed log saved to: $LOG_FILE${NC}"
+                fi
             fi
+        elif [ "${QUIET_WARNS:-0}" -eq 0 ]; then
+            rm -f "$LOG_FILE"
+        else
+            cp -f "$TMP_LOG" "$LOG_FILE"
         fi
-    fi
+    } >&3 2>/dev/null
     rm -f "$TMP_LOG"
-    if [[ "${SUDO_READY:-0}" = "1" ]]; then
+
+    if [ "${SUDO_READY:-0}" = "1" ]; then
+        if [ "${#ZYPPER_LOCKED_PKGS[@]}" -gt 0 ]; then
+            sudo env ZYPP_LOCK_TIMEOUT=10 zypper --non-interactive removelock "${ZYPPER_LOCKED_PKGS[@]}" >/dev/null 2>&1
+        fi
         local do_reboot=0
-        [[ "$exit_code" -eq 0 && "${DO_REBOOT:-0}" -eq 1 ]] && do_reboot=1
+        [ "$exit_code" -eq 0 ] && [ "${DO_REBOOT:-0}" = "1" ] && do_reboot=1
         sudo sh -c 'rm -f "$1" "$2"; systemctl try-restart polkit 2>/dev/null; if [ "$3" = 1 ]; then systemctl reboot; fi' _ \
-            "${RUN0_NOPASSWD_FILE:-/etc/polkit-1/rules.d/51-run0-nopasswd.rules}" \
-            "${SUDOERS_NOPASSWD_FILE:-/etc/sudoers.d/99-temp-installer}" \
-            "$do_reboot" || true
+            "$RUN0_NOPASSWD_FILE" "$SUDOERS_NOPASSWD_FILE" "$do_reboot"
     fi
 }
 trap cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 _pick_msg() { [[ "$SCRIPT_LANG" == "pl" ]] && echo "$1" || echo "$2"; }
 _log_write() { printf "\r\033[K" >&3; echo -e "$1" >&3; echo -e "$1"; cp -f "$TMP_LOG" "$LOG_FILE" 2>/dev/null || true; }
@@ -67,6 +95,7 @@ log_info()  { local m; m="$(_pick_msg "$1" "$2")"; _log_write "${INFO}==> $m${NC
 log_ok()    { local m; m="$(_pick_msg "$1" "$2")"; _log_write "${SUCCESS}[OK] $m${NC}"; }
 log_err()   { local m; m="$(_pick_msg "$1" "$2")"; _log_write "${ERR}[X] ERROR: $m${NC}"; }
 log_warn()  { local m; m="$(_pick_msg "$1" "$2")"; _log_write "${WARN}[!] WARN: $m${NC}"; }
+log_quiet() { local m; m="$(_pick_msg "$1" "$2")"; QUIET_WARNS=$((QUIET_WARNS + 1)); echo "[!] WARN: $m"; cp -f "$TMP_LOG" "$LOG_FILE" 2>/dev/null || true; }
 
 trap 'log_err "Błąd w linii $LINENO. Polecenie: $BASH_COMMAND" "Error at line $LINENO. Command: $BASH_COMMAND"' ERR
 
@@ -174,7 +203,6 @@ else
 fi
 
 TOTAL_STEPS=12
-FAILED_PACKAGES=()
 
 if [[ "$EUID" -eq 0 ]]; then
     if [[ "$SCRIPT_LANG" == "pl" ]]; then
@@ -199,19 +227,22 @@ if [[ -z "$CURRENT_USER" ]]; then
     exit 1
 fi
 
-RUN0_NOPASSWD_FILE="/etc/polkit-1/rules.d/51-run0-nopasswd.rules"
-SUDOERS_NOPASSWD_FILE="/etc/sudoers.d/99-temp-installer"
 USE_RUN0=0
-if ! command -v visudo >/dev/null 2>&1 || sudo --version 2>/dev/null | grep -qi "run0"; then
+SUDO_VERSION_OUT="$(sudo --version 2>/dev/null || true)"
+if ! command -v visudo >/dev/null 2>&1 || grep -qi "run0" <<< "$SUDO_VERSION_OUT"; then
     USE_RUN0=1
 fi
 
-SUDO_READY=0
-if [[ "$USE_RUN0" -ne 1 ]]; then
+if [[ "$USE_RUN0" -eq 1 ]]; then
+    SUDO_READY=1
+    printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo tee "$RUN0_NOPASSWD_FILE" > /dev/null
+    sudo systemctl try-restart polkit 2>/dev/null || true
+else
     if ! sudo -v; then
         log_err "Nie udało się uzyskać uprawnień sudo." "Failed to obtain sudo privileges."
         exit 1
     fi
+    SUDO_READY=1
     (
         trap - ERR
         set +e
@@ -222,30 +253,22 @@ if [[ "$USE_RUN0" -ne 1 ]]; then
         done
     ) &
     SUDO_KEEPALIVE_PID=$!
-    SUDO_READY=1
 
     SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$CURRENT_USER" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" &>/dev/null; then
-        sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_NOPASSWD_FILE" 2>/dev/null || true
-        echo "%wheel ALL=(ALL) NOPASSWD: ALL" > "$SUDOERS_TMP"
-        sudo visudo -cf "$SUDOERS_TMP" &>/dev/null && sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/99_nopasswd || true
+        sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_NOPASSWD_FILE"
+    else
+        rm -f "$SUDOERS_TMP"
+        if [[ "$SCRIPT_LANG" == "pl" ]]; then
+            echo -e "${ERR}[X] Nieprawidłowa składnia pliku sudoers – przerywam.${NC}" >&3
+        else
+            echo -e "${ERR}[X] Invalid sudoers rule syntax - aborting.${NC}" >&3
+        fi
+        exit 1
     fi
     rm -f "$SUDOERS_TMP"
-fi
-
-if [[ "$USE_RUN0" -eq 1 ]] || [[ ! -f "$SUDOERS_NOPASSWD_FILE" ]]; then
-    printf 'polkit.addRule(function(action, subject) {\n    if (subject.user == "%s") {\n        return polkit.Result.YES;\n    }\n});\n' "$CURRENT_USER" | sudo tee "$RUN0_NOPASSWD_FILE" > /dev/null
-    SUDO_READY=1
-    sudo systemctl try-restart polkit 2>/dev/null || true
-    sudo -n true 2>/dev/null || sudo systemctl try-restart polkit 2>/dev/null || true
-    USE_RUN0=1
-elif ! sudo -n true 2>/dev/null; then
-    if [[ "$SCRIPT_LANG" == "pl" ]]; then
-        echo -e "${WARN}[!] Reguła NOPASSWD zainstalowana, ale sudo nadal prosi o hasło - sprawdź 'sudo -l' (możliwa inna reguła w /etc/sudoers nadpisująca wpis z sudoers.d).${NC}" >&3
-    else
-        echo -e "${WARN}[!] NOPASSWD rule installed, but sudo still asks for a password - check 'sudo -l' (a rule in /etc/sudoers may be overriding the sudoers.d entry).${NC}" >&3
-    fi
+    SUDOERS_TMP=""
 fi
 
 printf '\033[?7l' >&3
@@ -261,17 +284,75 @@ pkg_installed() {
     rpm -q "$1" &>/dev/null
 }
 
+zypper_rc_ok() {
+    local rc="$1"
+    (( rc == 0 || (rc >= 100 && rc <= 103) || rc == 106 || rc == 107 ))
+}
+
+zypper_run() {
+    local rc=0
+    sudo zypper --non-interactive "$@" || rc=$?
+    zypper_rc_ok "$rc"
+}
+
 install_zypper_pkgs() {
     local pkg
     for pkg in "$@"; do
         pkg_installed "$pkg" && continue
         wait_for_zypper_lock
-        if sudo zypper install -y --allow-vendor-change "$pkg" 2>/dev/null; then
+        if zypper_run install --auto-agree-with-licenses "$pkg"; then
             continue
         fi
-        sudo zypper install -y --allow-vendor-change --from packman "$pkg" 2>/dev/null || FAILED_PACKAGES+=("$pkg")
+        if sudo zypper --non-interactive search -x -r packman "$pkg" &>/dev/null; then
+            zypper_run install --allow-vendor-change --auto-agree-with-licenses --from packman "$pkg" \
+                || FAILED_PACKAGES+=("$pkg")
+        else
+            FAILED_PACKAGES+=("$pkg")
+        fi
     done
 }
+
+wait_for_zypper_lock
+sudo zypper addrepo -cfp 90 https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/ packman || true
+sudo rpm --import https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/repodata/repomd.xml.key 2>/dev/null || true
+
+sudo zypper addrepo -cfp 100 https://download.opensuse.org/repositories/games/openSUSE_Tumbleweed/ games || true
+sudo zypper addrepo -cfp 100 https://download.opensuse.org/repositories/Emulators/openSUSE_Tumbleweed/ emulators || true
+sudo zypper addrepo -cfp 100 https://download.opensuse.org/repositories/Emulators:/Wine/openSUSE_Tumbleweed/ emulators-wine || true
+
+sudo zypper addrepo -cfp 80 https://dl.google.com/linux/chrome/rpm/stable/x86_64 google-chrome || true
+sudo rpm --import https://dl.google.com/linux/linux_signing_key.pub 2>/dev/null || true
+
+BRAVE_KEY_ID="0686B78420038257"
+if ! sudo rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc 2>/dev/null; then
+    BRAVE_GNUPGHOME="$(mktemp -d)"
+    KEY_FETCHED=true
+    if ! gpg --homedir "$BRAVE_GNUPGHOME" --keyserver hkps://keyserver.ubuntu.com --recv-keys "$BRAVE_KEY_ID" 2>/dev/null; then
+        if ! gpg --homedir "$BRAVE_GNUPGHOME" --keyserver hkps://keys.openpgp.org --recv-keys "$BRAVE_KEY_ID" 2>/dev/null; then
+            KEY_FETCHED=false
+        fi
+    fi
+    if [ "$KEY_FETCHED" = true ]; then
+        gpg --homedir "$BRAVE_GNUPGHOME" --armor --export "$BRAVE_KEY_ID" > "$BRAVE_GNUPGHOME/brave-core.asc" 2>/dev/null || true
+        sudo rpm --import "$BRAVE_GNUPGHOME/brave-core.asc" 2>/dev/null || true
+    fi
+    rm -rf "$BRAVE_GNUPGHOME"
+fi
+
+sudo zypper addrepo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo || true
+sudo zypper modifyrepo -p 100 games emulators emulators-wine 2>/dev/null || true
+
+wait_for_zypper_lock
+sudo zypper --non-interactive --gpg-auto-import-keys refresh --force \
+    || log_quiet "zypper refresh zakończył się błędem." "zypper refresh failed."
+wait_for_zypper_lock
+DUP_RC=0
+sudo zypper --non-interactive dup --allow-vendor-change --auto-agree-with-licenses || DUP_RC=$?
+if ! zypper_rc_ok "$DUP_RC"; then
+    log_err "zypper dup nie powiódł się (kod $DUP_RC) - przerywam, żeby uniknąć częściowego upgrade'u." \
+            "zypper dup failed (code $DUP_RC) - aborting to avoid a partial upgrade."
+    exit 1
+fi
 
 install_zypper_pkgs curl wget pciutils gpg2 dconf
 
@@ -285,9 +366,9 @@ GPU_UNKNOWN_PKGS=(
 if command -v lspci &>/dev/null; then
     GPU_INFO=$(lspci | grep -i -E "vga|3d|display" || true)
 
-    echo "$GPU_INFO" | grep -qi "nvidia"      && GPU_VENDORS+=("nvidia")
-    echo "$GPU_INFO" | grep -qi -E "\b(amd|ati)\b|advanced micro devices|radeon" && GPU_VENDORS+=("amd")
-    echo "$GPU_INFO" | grep -qi "intel"       && GPU_VENDORS+=("intel")
+    grep -qi "nvidia" <<< "$GPU_INFO" && GPU_VENDORS+=("nvidia")
+    grep -qi -E "\b(amd|ati)\b|advanced micro devices|radeon" <<< "$GPU_INFO" && GPU_VENDORS+=("amd")
+    grep -qi "intel" <<< "$GPU_INFO" && GPU_VENDORS+=("intel")
 
     TOTAL_KNOWN=${#GPU_VENDORS[@]}
 
@@ -335,13 +416,42 @@ TO_REMOVE=(
     gnome-maps gnome-weather yelp totem parole gnome-music
 )
 wait_for_zypper_lock
-for pkg in "${TO_REMOVE[@]}"; do
-    if pkg_installed "$pkg"; then
-        sudo zypper remove -y "$pkg" 2>/dev/null || true
+
+CORE_PKGS=(plasma6-desktop plasma6-workspace gnome-shell gnome-session gdm plasma6-login-manager NetworkManager sudo systemd)
+EXISTING_LOCKS="$(sudo zypper --non-interactive locks 2>/dev/null || true)"
+for core in "${CORE_PKGS[@]}"; do
+    pkg_installed "$core" || continue
+    grep -qw -- "$core" <<< "$EXISTING_LOCKS" && continue
+    if sudo zypper --non-interactive addlock "$core"; then
+        ZYPPER_LOCKED_PKGS+=("$core")
     fi
 done
-wait_for_zypper_lock
-sudo zypper autoremove -y 2>/dev/null || true
+
+INSTALLED_PACKAGES=()
+for pkg in "${TO_REMOVE[@]}"; do
+    pkg_installed "$pkg" && INSTALLED_PACKAGES+=("$pkg")
+done
+if [ "${#INSTALLED_PACKAGES[@]}" -gt 0 ]; then
+    if ! zypper_run remove --clean-deps "${INSTALLED_PACKAGES[@]}"; then
+        for pkg in "${INSTALLED_PACKAGES[@]}"; do
+            pkg_installed "$pkg" || continue
+            zypper_run remove --clean-deps "$pkg" || true
+        done
+        STILL_INSTALLED=()
+        for pkg in "${INSTALLED_PACKAGES[@]}"; do
+            pkg_installed "$pkg" && STILL_INSTALLED+=("$pkg")
+        done
+        if [ "${#STILL_INSTALLED[@]}" -gt 0 ]; then
+            log_quiet "Nie udało się usunąć: ${STILL_INSTALLED[*]}" "Could not remove: ${STILL_INSTALLED[*]}"
+        fi
+    fi
+fi
+
+if [ "${#ZYPPER_LOCKED_PKGS[@]}" -gt 0 ]; then
+    if sudo zypper --non-interactive removelock "${ZYPPER_LOCKED_PKGS[@]}"; then
+        ZYPPER_LOCKED_PKGS=()
+    fi
+fi
 
 if pkg_installed plasma-desktop || pkg_installed plasma-workspace || pkg_installed plasma6-desktop || pkg_installed plasma6-workspace; then
     mkdir -p ~/.config
@@ -373,43 +483,17 @@ command -v dconf &>/dev/null && dconf reset -f /org/gnome/evolution/ || true
 
 show_progress 2 $TOTAL_STEPS "$MSG_PHASE_1"
 
-wait_for_zypper_lock
-sudo zypper addrepo -cfp 90 https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/ packman || true
-sudo rpm --import https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/repodata/repomd.xml.key 2>/dev/null || true
-
-sudo zypper addrepo -cfp 80 https://download.opensuse.org/repositories/games/openSUSE_Tumbleweed/ games || true
-sudo zypper addrepo -cfp 80 https://download.opensuse.org/repositories/Emulators/openSUSE_Tumbleweed/ emulators || true
-sudo zypper addrepo -cfp 80 https://download.opensuse.org/repositories/Emulators:/Wine/openSUSE_Tumbleweed/ emulators-wine || true
-
-sudo zypper addrepo -cfp 80 https://dl.google.com/linux/chrome/rpm/stable/x86_64 google-chrome || true
-sudo rpm --import https://dl.google.com/linux/linux_signing_key.pub 2>/dev/null || true
-
-BRAVE_KEY_ID="0686B78420038257"
-if ! sudo rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc 2>/dev/null; then
-    BRAVE_GNUPGHOME="$(mktemp -d)"
-    KEY_FETCHED=true
-    if ! gpg --homedir "$BRAVE_GNUPGHOME" --keyserver hkps://keyserver.ubuntu.com --recv-keys "$BRAVE_KEY_ID" 2>/dev/null; then
-        if ! gpg --homedir "$BRAVE_GNUPGHOME" --keyserver hkps://keys.openpgp.org --recv-keys "$BRAVE_KEY_ID" 2>/dev/null; then
-            KEY_FETCHED=false
-        fi
-    fi
-    if [ "$KEY_FETCHED" = true ]; then
-        gpg --homedir "$BRAVE_GNUPGHOME" --armor --export "$BRAVE_KEY_ID" > "$BRAVE_GNUPGHOME/brave-core.asc" 2>/dev/null || true
-        sudo rpm --import "$BRAVE_GNUPGHOME/brave-core.asc" 2>/dev/null || true
-    fi
-    rm -rf "$BRAVE_GNUPGHOME"
-fi
-
-sudo zypper addrepo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo || true
 
 sudo mkdir -p /etc/NetworkManager/conf.d
 echo -e "[main]\ndns=default\nrc-manager=symlink" | sudo tee /etc/NetworkManager/conf.d/dns.conf > /dev/null
 echo -e "[global-dns]\n\n[global-dns-domain-*]\nservers=1.1.1.2,1.0.0.2,2606:4700:4700::1112,2606:4700:4700::1002" | sudo tee /etc/NetworkManager/conf.d/global-dns.conf > /dev/null
 
-ACTIVE_CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep -v "^lo" | head -n 1 | cut -d: -f1 || true)
+sudo nmcli general reload 2>/dev/null || sudo systemctl reload NetworkManager 2>/dev/null || true
+ACTIVE_CONN="$(nmcli -t -f UUID,DEVICE connection show --active 2>/dev/null \
+    | awk -F: '$2 != "" && $2 != "lo" && $2 !~ /^(virbr|docker|br-|veth|tun|tap)/ {print $1; exit}' || true)"
 if [[ -n "$ACTIVE_CONN" ]]; then
-    sudo nmcli connection modify "$ACTIVE_CONN" ipv4.dns "1.1.1.2,1.0.0.2" ipv6.dns "2606:4700:4700::1112,2606:4700:4700::1002"
-    sudo nmcli connection up "$ACTIVE_CONN" || true
+    sudo nmcli connection modify uuid "$ACTIVE_CONN" ipv4.dns "1.1.1.2,1.0.0.2" ipv6.dns "2606:4700:4700::1112,2606:4700:4700::1002" || true
+    sudo nmcli connection up uuid "$ACTIVE_CONN" || true
 fi
 
 show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
@@ -418,11 +502,6 @@ show_progress 3 $TOTAL_STEPS "$MSG_PHASE_1"
 #  ETAP 2/4: INSTALACJA
 # ==========================================================
 show_progress 4 $TOTAL_STEPS "$MSG_PHASE_2"
-
-wait_for_zypper_lock
-sudo zypper --gpg-auto-import-keys refresh --force || true
-wait_for_zypper_lock
-sudo zypper dup -y --allow-vendor-change || true
 
 show_progress 5 $TOTAL_STEPS "$MSG_PHASE_2"
 
@@ -538,7 +617,7 @@ download_rpm() {
 install_discord_rpm() {
     local dest="$RPM_DIR/discord.rpm"
     if wget -q --user-agent="Mozilla/5.0" "https://discord.com/api/download?platform=linux&format=rpm" -O "$dest"; then
-        if file "$dest" | grep -q "RPM"; then
+        if grep -q "RPM" <<< "$(file "$dest" 2>/dev/null)"; then
             wait_for_zypper_lock
             sudo zypper install -y --allow-unsigned-rpm "$dest" 2>/dev/null || FAILED_PACKAGES+=("discord")
         else
@@ -553,7 +632,7 @@ install_discord_rpm() {
 wait_for_zypper_lock
 if pkg_installed discord; then
     :
-elif sudo zypper install -y --allow-vendor-change discord 2>/dev/null; then
+elif zypper_run install --allow-vendor-change --auto-agree-with-licenses discord; then
     :
 else
     install_discord_rpm
@@ -589,8 +668,8 @@ LSFG_URLS=()
 if LSFG_HTML="$(curl -fsSL --retry 3 --retry-delay 2 -A "$LSFG_UA" -e "$LSFG_BASE/" "$LSFG_BASE/" 2>/dev/null)"; then
     mapfile -t LSFG_CANDIDATES < <(
         {
-            printf '%s' "$LSFG_HTML" | grep -oiE '(href|src)=["'\''][^"'\'']*lsfg-vk-[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?\.tar\.xz["'\'']' | sed -E 's/^(href|src)=["'\'']//I; s/["'\'']$//'
-            printf '%s' "$LSFG_HTML" | grep -oiE '(https?://[^"'\'' <>[:space:]]+/)?lsfg-vk-[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?\.tar\.xz'
+            printf '%s' "$LSFG_HTML" | grep -oiE '(href|src)=["'\''][^"'\'']*lsfg-vk-[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?\.tar\.xz["'\'']' | sed -E 's/^(href|src)=["'\'']//I; s/["'\'']$//' || true
+            printf '%s' "$LSFG_HTML" | grep -oiE '(https?://[^"'\'' <>[:space:]]+/)?lsfg-vk-[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?\.tar\.xz' || true
         } | awk 'NF && !seen[$0]++' | sort -rV || true
     )
     for c in "${LSFG_CANDIDATES[@]}"; do
@@ -656,8 +735,18 @@ show_progress 9 $TOTAL_STEPS "$MSG_PHASE_3"
 
 restore_packagekit
 
+NVIDIA_DRIVER_PRESENT=0
+if [[ $GPU_TYPE == *"nvidia"* ]]; then
+    if modinfo nvidia &>/dev/null || [[ -n "$(rpm -qa 'nvidia-driver-G0*' 'nvidia-open-driver-G0*' 2>/dev/null)" ]]; then
+        NVIDIA_DRIVER_PRESENT=1
+    else
+        log_quiet "Wykryto GPU NVIDIA, ale brak sterownika jądra (nvidia-driver-G06 / nvidia-open-driver-G06) - pomijam nvidia_drm.modeset i force_drivers." \
+                  "NVIDIA GPU detected but no kernel driver (nvidia-driver-G06 / nvidia-open-driver-G06) - skipping nvidia_drm.modeset and force_drivers."
+    fi
+fi
+
 KERNEL_ARGS=("mitigations=off" "split_lock_detect=off")
-[[ $GPU_TYPE == *"nvidia"* ]] && KERNEL_ARGS+=("nvidia_drm.modeset=1")
+[[ "$NVIDIA_DRIVER_PRESENT" -eq 1 ]] && KERNEL_ARGS+=("nvidia_drm.modeset=1")
 
 LOADER_CONF="/boot/efi/loader/loader.conf"
 if sudo test -f "$LOADER_CONF"; then
@@ -696,7 +785,7 @@ show_progress 10 $TOTAL_STEPS "$MSG_PHASE_3"
 
 DRACUT_CONF="/etc/dracut.conf.d/90-gpu.conf"
 FORCE_DRIVERS=""
-if [[ $GPU_TYPE == *"nvidia"* ]]; then
+if [[ "$NVIDIA_DRIVER_PRESENT" -eq 1 ]]; then
     FORCE_DRIVERS+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm"
 fi
 if [[ $GPU_TYPE == *"amd"* ]]; then
@@ -737,7 +826,7 @@ sudo systemctl daemon-reload || true
 sudo systemctl start /dev/zram0 2>/dev/null || sudo systemctl restart systemd-zram-setup@zram0.service 2>/dev/null || true
 
 for svc in libvirtd virtqemud; do
-    if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "$svc"; then
+    if grep -q "$svc" <<< "$(systemctl list-unit-files "${svc}.service" 2>/dev/null)"; then
         sudo systemctl enable --now "${svc}.service" 2>/dev/null || true
         break
     fi
@@ -777,7 +866,7 @@ if command -v firewall-cmd &>/dev/null; then
 fi
 
 if command -v dconf &>/dev/null; then
-    dconf load /org/virt-manager/virt-manager/ <<'DCONFEOF'
+    dconf load /org/virt-manager/virt-manager/ <<'DCONFEOF' || true
 [/]
 manager-window-height=297
 manager-window-width=478
@@ -815,7 +904,7 @@ DCONFEOF
 fi
 
 sudo sed -i 's/^#\?[[:space:]]*DefaultTimeoutStopSec=.*/DefaultTimeoutStopSec=3s/' /etc/systemd/system.conf 2>/dev/null || true
-sudo sed -i 's/^#\?[[:space:]]*DefaultTimeoutStartSec=.*/DefaultTimeoutStartSec=3s/' /etc/systemd/system.conf 2>/dev/null || true
+sudo sed -i 's/^DefaultTimeoutStartSec=3s$/#DefaultTimeoutStartSec=90s/' /etc/systemd/system.conf 2>/dev/null || true
 sudo systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
 sudo journalctl --vacuum-time=2d || true
 
@@ -855,7 +944,7 @@ if [[ -n "$ZSH_BIN" ]]; then
         SHELL_LOCALE="${LANG:-${LC_ALL:-${LC_MESSAGES:-en_US.UTF-8}}}"
         if command -v locale &>/dev/null; then
             AVAILABLE_LOCALES="$(locale -a 2>/dev/null)"
-            if ! echo "$AVAILABLE_LOCALES" | grep -qiF "$SHELL_LOCALE" && ! echo "$AVAILABLE_LOCALES" | grep -qiF "$(echo "$SHELL_LOCALE" | sed 's/UTF-8/utf8/')"; then
+            if ! grep -qiF "$SHELL_LOCALE" <<< "$AVAILABLE_LOCALES" && ! grep -qiF "${SHELL_LOCALE//UTF-8/utf8}" <<< "$AVAILABLE_LOCALES"; then
                 SHELL_LOCALE="en_US.UTF-8"
             fi
         fi
@@ -895,7 +984,8 @@ else
     RESTART_PROMPT="Do you want to restart the system now? [Y/N]: "
 fi
 echo -en "${INFO}==> ${RESTART_PROMPT}${NC}" >&3
-read -r RESTART_CHOICE < /dev/tty
+RESTART_CHOICE=""
+read -r RESTART_CHOICE < /dev/tty || RESTART_CHOICE=""
 case "$RESTART_CHOICE" in
     [YyTt]*)
         DO_REBOOT=1
