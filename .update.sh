@@ -53,13 +53,13 @@ fi
 
 remove_temp_privs() {
     [[ "$PRIVS_GRANTED" -eq 1 ]] || return 0
-    if [[ "$USE_RUN0" -eq 1 ]]; then
-        run0 rm -f "$RUN0_NOPASSWD_FILE" 2>/dev/null || true
-        run0 systemctl try-restart polkit 2>/dev/null || true
-    else
-        sudo -n rm -f /etc/sudoers.d/99-temp-update 2>/dev/null || true
-    fi
     PRIVS_GRANTED=0
+    if [[ "$USE_RUN0" -eq 1 ]]; then
+        [[ -e "$RUN0_NOPASSWD_FILE" ]] || return 0
+        run0 sh -c 'rm -f "$1"; systemctl try-restart polkit 2>/dev/null || true' _ "$RUN0_NOPASSWD_FILE" </dev/null 2>/dev/null || true
+    else
+        sudo -n rm -f /etc/sudoers.d/99-temp-update </dev/null 2>/dev/null || true
+    fi
 }
 
 cleanup_on_exit() {
@@ -140,10 +140,9 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
-    if { [[ -r /dev/tty ]] && run0 install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" </dev/tty >&3 2>&3; } \
-       || { [[ ! -r /dev/tty ]] && run0 install -m 0644 -o root -g root "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" >&3 2>&3; }; then
+    if { [[ -r /dev/tty ]] && run0 sh -c 'install -m 0644 -o root -g root "$1" "$2" || exit 1; systemctl try-restart polkit 2>/dev/null || true' _ "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" </dev/tty >&3 2>&3; } \
+       || { [[ ! -r /dev/tty ]] && run0 sh -c 'install -m 0644 -o root -g root "$1" "$2" || exit 1; systemctl try-restart polkit 2>/dev/null || true' _ "$POLKIT_TMP" "$RUN0_NOPASSWD_FILE" >&3 2>&3; }; then
         PRIVS_GRANTED=1
-        run0 systemctl try-restart polkit 2>/dev/null || true
         rm -f "$POLKIT_TMP"
     else
         rm -f "$POLKIT_TMP"
