@@ -542,6 +542,7 @@ SYSTEM_PKGS=(
     bleachbit makeself vim cdemu-daemon cdemu-client vlc
     gamemode gamescope mangohud libvkd3d1 wine-staging wine-mono wine-gecko winetricks
     cmake meson patterns-devel-base-devel_basis ghostwriter
+    kernel-devel linux-glibc-devel libelf-devel
     qmmp ninja pkgconf-pkg-config clang llvm pipewire-alsa
     google-chrome-stable brave-origin flatpak zram-generator
     virt-manager qemu-tools libvirt libvirt-daemon-qemu
@@ -599,6 +600,12 @@ for candidate in qemu-ovmf-x86_64 ovmf edk2-ovmf; do
         break
     fi
 done
+
+if [[ -n "$NV_KERNEL_FLAVOR" ]] && pkg_available "kernel-${NV_KERNEL_FLAVOR}-devel"; then
+    SYSTEM_PKGS+=("kernel-${NV_KERNEL_FLAVOR}-devel")
+else
+    SYSTEM_PKGS+=(kernel-default-devel)
+fi
 
 if [ "${#SYSTEM_PKGS[@]}" -gt 0 ]; then
     readarray -t SYSTEM_PKGS < <(printf '%s\n' "${SYSTEM_PKGS[@]}" | awk '!seen[$0]++')
