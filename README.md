@@ -1,6 +1,6 @@
 # 🦎 openSUSE Tumbleweed Post-Install Setup Script
 
-A comprehensive, automated Bash post-installation script for a fresh **openSUSE Tumbleweed** install. It configures Zypper repositories (Packman, Games, Emulators/Wine, Google Chrome, Brave), removes the default KDE Plasma/GNOME apps (mail, calendar, multimedia), installs a large set of system/multimedia/gaming packages, detects your GPU and picks matching drivers plus 32-bit libraries, sets up virtualization (libvirt/QEMU) and the firewall, zeroes out the `systemd-boot` timeout, forces Cloudflare DNS, and installs Zsh with Oh My Zsh and Powerlevel10k.
+A comprehensive, automated Bash post-installation script for a fresh **openSUSE Tumbleweed** install. It configures Zypper repositories (Packman, Games, Emulators/Wine, Google Chrome, Brave), removes the default KDE Plasma/GNOME apps (mail, calendar, multimedia), installs a large set of system/multimedia/gaming packages, detects your GPU and picks matching drivers plus 32-bit libraries, sets up virtualization (libvirt/QEMU) and the firewall, zeroes out the `systemd-boot` timeout, forces Cloudflare DNS 1.1.1.2/1.0.0.2, and installs Zsh with Oh My Zsh and Powerlevel10k.
 
 The script auto-detects the message language (Polish/English) from the `LANG`/`LC_ALL`/`LC_MESSAGES` locale variables and shows all logs and the progress bar in the detected language.
 
